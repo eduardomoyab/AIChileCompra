@@ -1,0 +1,35 @@
+#Paths
+path_diccionario_features: diccionarios/diccionario_features.docx
+path_diccionario_procesador: diccionarios/diccionario_procesador.xlsx
+
+Testing: False 
+
+cols_interes: ['ID_new', 'DescripcionProductoComprador', 'DescripcionProductoProveedor', 'productoname']
+cols_target: ['Modalidad','Tipo Producto', 'Marca', 'Procesador','Núcleos','Hilos Procesador','RAM (GB)','Tipo RAM','Sistema Operativo', 'Tipo Almacenamiento', 'Almacenamiento (GB)', 'Pantalla (Pulgadas)']
+
+#Embedding y vectorstore
+embedding_model: GOOGLE #Valores posibles: GOOGLE | HF | OPENAI
+
+#(ADJUNTOS)
+chunk_size_adj: 1200
+chunk_overlap_adj: 240
+
+#DICCIONARIOS
+chunk_size_dic: 500
+chunk_overlap_dic: 100
+
+#LLM
+llm_model: GOOGLE #Valores posibles: GOOGLE | HF | GPT | DEEPSEEK 
+model_version: gemini-2.0-flash # gemini-2.0-flash-lite, gpt-4o-mini , deepseek-chat, gemini-2.0-flash
+temperature_adj: 0.7
+temperature_dic: 0.3
+max_tokens: null  #Puede ser numero entero o null para dejar sin limite
+timeout: null
+max_retries: 2
+
+#Retrieval
+search_type_adj: 'similarity'
+search_type_dic: 'similarity'
+search_k_adj: {'k': 5}
+search_k_dic: {'k': 2}
+

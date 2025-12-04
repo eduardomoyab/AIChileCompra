@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Environment Variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# ChromaDB / Vector Stores
+cache/
+chroma_db/
+chroma_vectorstore/
+*.db
+
+# Processed Files
+attachments/
+processed/
+processed_attachments/
+processed_features/
+
+# Logs
+*.log
+logs/
+log_time.txt
+
+# Temporary Files
+temp/
+tmp/
+*.tmp
+input_prompt/
+
+# Output Files
+resultado*.json
+output*.json
+*.csv
+tokens_input_output.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Selenium
+*.crdownload
+*.download
+
+# OCR temporary files
+*_ocr.pdf
+
+# Skip files
+skipped_files.txt
+
+# Data files (large)
+data/*.db
+data/*.xlsx
+data/*.csv
+
+# Diccionarios (si son muy grandes, descomentar)
+# diccionarios/

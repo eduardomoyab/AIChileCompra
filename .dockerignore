@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# Tests
+test_*.py
+tests/
+
+# Logs (se crearán en el contenedor)
+*.log
+logs/
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Processed data (se creará en el contenedor)
+attachments/
+processed/
+processed_attachments/
+processed_features/
+
+# Cache (se creará en el contenedor o se monta como volumen)
+cache/
+chroma_db/
+chroma_vectorstore/
+
+# Output files
+resultado*.json
+output*.json
+*.csv
+input_prompt/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment (debe copiarse manualmente o pasarse como env vars)
+.env
+
+# Large data files
+data/*.db
+data/*.xlsx
+data/*.csv
+
+# Skip files
+skipped_files.txt
