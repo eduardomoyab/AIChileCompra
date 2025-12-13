@@ -20,16 +20,7 @@ payload_fields:
 # Campos de salida esperados (para validación y documentación)
 output_fields:
   - ROWNUM
-  - Modalidad
-  - Tipo Producto
-  - Marca
-  - Procesador
-  - Núcleos
-  - Hilos Procesador
-  - RAM (GB)
-  - Tipo RAM
-  - Sistema Operativo
-  - Tipo Almacenamiento
-  - Almacenamiento (GB)
-  - Pantalla (Pulgadas)
+  - Tipo  # AIO, Laptop, Desktop, Otro
+  - Part Number
+  - Modelo
 

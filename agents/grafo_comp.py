@@ -143,7 +143,8 @@ def ejecutar_catalogacion(
     rut_proveedor: str,
     payload: Dict[str, Any],
     use_diccionarios: bool = True,
-    llm_provider: str = None
+    llm_provider: str = None,
+    downloader: Any = None
 ) -> Dict[str, Any]:
     """
     Ejecuta el workflow completo de catalogación usando el grafo.
@@ -186,6 +187,10 @@ def ejecutar_catalogacion(
         use_diccionarios=use_diccionarios,
         llm_provider=llm_provider
     )
+
+    # Agregar downloader al state si se proporcionó
+    if downloader is not None:
+        initial_state['downloader'] = downloader
 
     # Crear y ejecutar grafo
     graph = create_catalogacion_graph()

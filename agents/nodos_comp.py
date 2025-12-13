@@ -48,10 +48,32 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
     logging.info(f"[NODO 1/5] Descargando adjuntos para {state['codigo_cotizacion']}")
 
     try:
+        # Verificar si ya existen archivos descargados
+        attachments_dir = os.path.join(
+            os.getenv('ATTACHMENTS_OUTPUT_PATH', 'attachments'),
+            state['codigo_cotizacion'],
+            state['rut_proveedor']
+        )
+
+        if os.path.exists(attachments_dir):
+            # Contar archivos existentes (excluyendo directorios)
+            existing_files = [f for f in os.listdir(attachments_dir)
+                            if os.path.isfile(os.path.join(attachments_dir, f))]
+
+            if len(existing_files) > 0:
+                logging.info(f"✓ Archivos ya descargados: {len(existing_files)} archivos encontrados")
+                state['adjuntos_descargados'] = True
+                state['adjuntos_path'] = attachments_dir
+                return state
+
+        # Si no existen, proceder con la descarga
+        # Usar downloader global si está disponible en el state
+        downloader = state.get('downloader', None)
         resultado = download_attachments_simple(
             codigo_cotizacion=state['codigo_cotizacion'],
             rut_proveedor=state['rut_proveedor'],
-            headless=True
+            headless=True,
+            downloader=downloader
         )
 
         if resultado['success']:
@@ -112,10 +134,15 @@ def procesar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         if resultado['success']:
             state['adjuntos_procesados'] = True
             state['processed_path'] = resultado['output_path']
-            logging.info(
-                f"✓ Adjuntos procesados: {resultado['processed_files']} archivos, "
-                f"{resultado['skipped_files']} omitidos"
-            )
+
+            # Log según si se procesaron archivos nuevos o ya existían
+            if resultado['processed_files'] > 0:
+                logging.info(
+                    f"✓ Adjuntos procesados: {resultado['processed_files']} archivos, "
+                    f"{resultado['skipped_files']} omitidos"
+                )
+            else:
+                logging.info("✓ Archivos ya procesados previamente")
 
             if resultado['skipped_files'] > 0:
                 warning_msg = f"{resultado['skipped_files']} archivos fueron omitidos durante el procesamiento"
@@ -201,10 +228,14 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             payload=state['payload'],
             codigo_cotizacion=state['codigo_cotizacion'],
             rut_proveedor=state['rut_proveedor'],
+            processed_path=state['processed_path'],
             use_diccionarios=False  # Solo adjuntos, sin diccionarios
         )
 
         state['resultado_adjuntos'] = resultado
+        # Si no se usarán diccionarios, este es el resultado final
+        if not state.get('use_diccionarios', True):
+            state['resultado_final'] = resultado
         logging.info(f"✓ RAG adjuntos completado para ROWNUM {state['payload'].get('ROWNUM')}")
 
     except Exception as e:
@@ -259,6 +290,7 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
             payload=state['payload'],
             codigo_cotizacion=state['codigo_cotizacion'],
             rut_proveedor=state['rut_proveedor'],
+            processed_path=state['processed_path'],
             use_diccionarios=True  # Con diccionarios
         )
 

@@ -25,7 +25,7 @@ def create_retriever_adjuntos(
     k: int = 5,
     search_type: str = "similarity",
     collection_name: str = "adjuntos_procesados",
-    persist_directory: str = "cache/Adjuntos"
+    persist_directory: str = "faiss_db"
 ):
     """
     Crea un retriever para buscar en los adjuntos procesados de una cotización específica.
@@ -81,7 +81,7 @@ def search_adjuntos(
     rut_proveedor: str,
     k: int = 5,
     collection_name: str = "adjuntos_procesados",
-    persist_directory: str = "cache/Adjuntos"
+    persist_directory: str = "faiss_db"
 ):
     """
     Busca directamente en los adjuntos procesados sin crear un retriever.
@@ -130,7 +130,7 @@ def search_adjuntos_with_score(
     rut_proveedor: str,
     k: int = 5,
     collection_name: str = "adjuntos_procesados",
-    persist_directory: str = "cache/Adjuntos"
+    persist_directory: str = "faiss_db"
 ):
     """
     Busca en adjuntos procesados y retorna documentos con scores de similitud.

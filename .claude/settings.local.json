@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Test-Path \"d:\\Tesis 2024 Compras Publicas\\Tesis_LLM\\Repo\\AIChileCompra\\chroma_db\")",
+      "Bash(Test-Path \"cache/Adjuntos/chroma.sqlite3\")",
+      "Bash(if [ -d \"cache/Adjuntos\" ])",
+      "Bash(then ls -la cache/Adjuntos/)",
+      "Bash(else echo \"Directorio cache/Adjuntos no existe\")",
+      "Bash(fi)",
+      "Bash(curl:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python -m uvicorn:*)",
+      "Bash(python:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -68,7 +68,8 @@ def extraer_atributos(
     codigo_cotizacion: str,
     rut_proveedor: str,
     use_diccionarios: bool = True,
-    llm_provider: str = None
+    llm_provider: str = None,
+    downloader: Any = None
 ) -> Dict[str, Any]:
     """
     Extrae atributos de un producto usando el flujo completo de catalogación.
@@ -135,7 +136,8 @@ def extraer_atributos(
             rut_proveedor=rut_proveedor,
             payload=payload,
             use_diccionarios=use_diccionarios,
-            llm_provider=llm_provider
+            llm_provider=llm_provider,
+            downloader=downloader
         )
     else:
         raise ValueError(

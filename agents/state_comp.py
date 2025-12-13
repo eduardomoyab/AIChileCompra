@@ -59,6 +59,7 @@ class CatalogacionState(TypedDict, total=False):
     # ========== CONFIGURATION ==========
     use_diccionarios: bool
     llm_provider: Optional[str]
+    downloader: Optional[Any]  # Instancia global de AttachmentDownloader (opcional)
 
     # ========== PROCESSING STATE ==========
     adjuntos_descargados: bool

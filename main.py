@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from extraer_atributos import extraer_atributos, extraer_atributos_lote, validar_payload
+from utils.get_attachments import MercadoPublicoAttachmentDownloader
 
 # Cargar variables de entorno
 load_dotenv()
@@ -51,6 +52,48 @@ app.add_middleware(
 
 # API Key desde .env
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-here")
+
+# ========== GLOBAL SESSION ==========
+
+# Instancia global del downloader con sesión persistente
+global_downloader = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicializa la sesión global al inicio del servidor"""
+    global global_downloader
+
+    logging.info("🚀 Iniciando servidor...")
+    logging.info("🔐 Iniciando sesión en ChileCompra...")
+
+    try:
+        # Crear downloader global
+        global_downloader = MercadoPublicoAttachmentDownloader(headless=True)
+
+        # Hacer login una sola vez
+        global_downloader.login_mercado_publico()
+
+        if global_downloader.token_bearer:
+            logging.info("✓ Sesión iniciada correctamente")
+            logging.info(f"✓ Token obtenido: {global_downloader.token_bearer[:20]}...")
+        else:
+            logging.error("❌ No se pudo obtener el token")
+
+    except Exception as e:
+        logging.error(f"❌ Error en login inicial: {e}")
+        logging.warning("⚠️  El servidor continuará pero necesitará login en cada request")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cierra la sesión al apagar el servidor"""
+    global global_downloader
+
+    if global_downloader and global_downloader.driver:
+        logging.info("🔒 Cerrando sesión...")
+        global_downloader.driver.quit()
+        logging.info("✓ Sesión cerrada")
 
 
 # ========== SECURITY ==========
@@ -254,13 +297,14 @@ async def catalogar_producto(request: CatalogarRequest):
     try:
         logging.info(f"Catalogando producto - Cotización: {request.codigo_cotizacion}, Proveedor: {request.rut_proveedor}")
 
-        # Ejecutar catalogación
+        # Ejecutar catalogación (usar downloader global si está disponible)
         resultado_completo = extraer_atributos(
             payload=request.payload.dict(),
             codigo_cotizacion=request.codigo_cotizacion,
             rut_proveedor=request.rut_proveedor,
             use_diccionarios=request.use_diccionarios,
-            llm_provider=request.llm_provider
+            llm_provider=request.llm_provider,
+            downloader=global_downloader
         )
 
         # Preparar response
@@ -296,63 +340,63 @@ async def catalogar_producto(request: CatalogarRequest):
         )
 
 
-@app.post("/catalogar/lote", response_model=List[CatalogarResponse], dependencies=[Depends(verify_api_key)])
-async def catalogar_lote(request: CatalogarLoteRequest):
-    """
-    Cataloga un lote de productos.
-
-    Procesa múltiples productos secuencialmente, cada uno con el flujo completo
-    de catalogación.
-
-    **Requiere header:** `X-API-Key`
-
-    **Returns:**
-    Lista de resultados, uno por cada producto en el lote.
-    """
-    try:
-        logging.info(f"Catalogando lote de {len(request.payloads)} productos")
-
-        # Convertir payloads a dict
-        payloads_dict = [p.dict() for p in request.payloads]
-
-        # Ejecutar catalogación en lote
-        resultados_completos = extraer_atributos_lote(
-            payloads=payloads_dict,
-            codigo_cotizacion=request.codigo_cotizacion,
-            rut_proveedor=request.rut_proveedor,
-            use_diccionarios=request.use_diccionarios,
-            llm_provider=request.llm_provider
-        )
-
-        # Preparar responses
-        responses = []
-        for i, (resultado_completo, payload) in enumerate(zip(resultados_completos, request.payloads), 1):
-            response = CatalogarResponse(
-                success=resultado_completo.get('resultado_final') is not None,
-                resultado=resultado_completo.get('resultado_final'),
-                errores=resultado_completo.get('errores', []),
-                warnings=resultado_completo.get('warnings', []),
-                metadata={
-                    "producto_numero": i,
-                    "categoria": payload.Categoria
-                }
-            )
-            responses.append(response)
-
-        logging.info(f"Lote completado - {len(responses)} productos procesados")
-
-        return responses
-
-    except ValueError as e:
-        logging.error(f"Error de validación: {e}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-    except Exception as e:
-        logging.exception(f"Error catalogando lote: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error interno: {str(e)}"
-        )
+# @app.post("/catalogar/lote", response_model=List[CatalogarResponse], dependencies=[Depends(verify_api_key)])
+# async def catalogar_lote(request: CatalogarLoteRequest):
+#     """
+#     Cataloga un lote de productos.
+#
+#     Procesa múltiples productos secuencialmente, cada uno con el flujo completo
+#     de catalogación.
+#
+#     **Requiere header:** `X-API-Key`
+#
+#     **Returns:**
+#     Lista de resultados, uno por cada producto en el lote.
+#     """
+#     try:
+#         logging.info(f"Catalogando lote de {len(request.payloads)} productos")
+#
+#         # Convertir payloads a dict
+#         payloads_dict = [p.dict() for p in request.payloads]
+#
+#         # Ejecutar catalogación en lote
+#         resultados_completos = extraer_atributos_lote(
+#             payloads=payloads_dict,
+#             codigo_cotizacion=request.codigo_cotizacion,
+#             rut_proveedor=request.rut_proveedor,
+#             use_diccionarios=request.use_diccionarios,
+#             llm_provider=request.llm_provider
+#         )
+#
+#         # Preparar responses
+#         responses = []
+#         for i, (resultado_completo, payload) in enumerate(zip(resultados_completos, request.payloads), 1):
+#             response = CatalogarResponse(
+#                 success=resultado_completo.get('resultado_final') is not None,
+#                 resultado=resultado_completo.get('resultado_final'),
+#                 errores=resultado_completo.get('errores', []),
+#                 warnings=resultado_completo.get('warnings', []),
+#                 metadata={
+#                     "producto_numero": i,
+#                     "categoria": payload.Categoria
+#                 }
+#             )
+#             responses.append(response)
+#
+#         logging.info(f"Lote completado - {len(responses)} productos procesados")
+#
+#         return responses
+#
+#     except ValueError as e:
+#         logging.error(f"Error de validación: {e}")
+#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+#
+#     except Exception as e:
+#         logging.exception(f"Error catalogando lote: {e}")
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"Error interno: {str(e)}"
+#         )
 
 
 # ========== STARTUP & SHUTDOWN ==========

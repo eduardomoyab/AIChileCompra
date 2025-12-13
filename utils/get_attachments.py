@@ -5,6 +5,7 @@ import requests
 import shutil
 import zipfile
 import rarfile
+from typing import Optional
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
@@ -347,23 +348,35 @@ class MercadoPublicoAttachmentDownloader:
 
 
 def download_attachments_simple(codigo_cotizacion: str, rut_proveedor: str,
-                                headless: bool = True) -> dict:
+                                headless: bool = True,
+                                downloader: Optional[object] = None) -> dict:
     """
     Función simple para descargar adjuntos sin necesidad de gestionar la clase.
 
     Args:
         codigo_cotizacion (str): Código de la solicitud de cotización
         rut_proveedor (str): RUT del proveedor
-        headless (bool): Si ejecutar el navegador en modo headless
+        headless (bool): Si ejecutar el navegador en modo headless (solo si downloader es None)
+        downloader (Optional[MercadoPublicoAttachmentDownloader]): Downloader existente con sesión activa.
+                                                                    Si se proporciona, se reutiliza la sesión.
 
     Returns:
         dict: Resultado de la descarga
 
     Example:
+        >>> # Con sesión nueva (modo antiguo)
         >>> result = download_attachments_simple("12345678", "76123456-7")
-        >>> if result['success']:
-        >>>     print(f"Downloaded {result['total_files']} files to {result['output_path']}")
+        >>>
+        >>> # Con sesión existente (recomendado)
+        >>> global_downloader = MercadoPublicoAttachmentDownloader(headless=True)
+        >>> global_downloader.login_mercado_publico()
+        >>> result = download_attachments_simple("12345678", "76123456-7", downloader=global_downloader)
     """
+    # Si se proporciona un downloader, usarlo directamente
+    if downloader is not None:
+        return downloader.download_attachments(codigo_cotizacion, rut_proveedor, auto_login=False)
+
+    # Modo antiguo: crear downloader temporal
     downloader = MercadoPublicoAttachmentDownloader(headless=headless)
     try:
         result = downloader.download_attachments(codigo_cotizacion, rut_proveedor)

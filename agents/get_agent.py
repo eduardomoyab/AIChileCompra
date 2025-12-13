@@ -3,7 +3,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_deepseek import ChatDeepSeek
+#from langchain_deepseek import ChatDeepSeek
 # Cargar variables de entorno
 load_dotenv()
 
@@ -50,20 +50,20 @@ def get_llm(model_provider: str = "openai", temperature: float = 0.0):
             google_api_key=api_key
         )
 
-    elif model_provider == "deepseek":
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY no está configurada en el archivo .env")
+    # elif model_provider == "deepseek":
+    #     api_key = os.getenv("DEEPSEEK_API_KEY")
+    #     if not api_key:
+    #         raise ValueError("DEEPSEEK_API_KEY no está configurada en el archivo .env")
 
-        model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    #     model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    #     base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 
-        return ChatDeepSeek(
-            model=model_name,
-            temperature=temperature,
-            deepseek_api_key=api_key,
-            base_url=base_url
-        )
+    #     return ChatDeepSeek(
+    #         model=model_name,
+    #         temperature=temperature,
+    #         deepseek_api_key=api_key,
+    #         base_url=base_url
+    #     )
 
     else:
         raise ValueError(
