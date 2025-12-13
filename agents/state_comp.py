@@ -60,6 +60,7 @@ class CatalogacionState(TypedDict, total=False):
     use_diccionarios: bool
     llm_provider: Optional[str]
     downloader: Optional[Any]  # Instancia global de AttachmentDownloader (opcional)
+    campos_manuales_lista: Optional[List[str]]  # Lista de campos adicionales a extraer en paralelo
 
     # ========== PROCESSING STATE ==========
     adjuntos_descargados: bool
@@ -71,6 +72,7 @@ class CatalogacionState(TypedDict, total=False):
     # ========== INTERMEDIATE RESULTS ==========
     resultado_adjuntos: Optional[Dict[str, Any]]
     resultado_diccionarios: Optional[Dict[str, Any]]
+    resultado_campos_manuales: Optional[Dict[str, Any]]  # Resultado de extracción paralela de campos manuales
 
     # ========== FINAL RESULT ==========
     resultado_final: Optional[Dict[str, Any]]
@@ -86,7 +88,8 @@ def create_initial_state(
     rut_proveedor: str,
     payload: Dict[str, Any],
     use_diccionarios: bool = True,
-    llm_provider: Optional[str] = None
+    llm_provider: Optional[str] = None,
+    campos_manuales_lista: Optional[List[str]] = None
 ) -> CatalogacionState:
     """
     Crea el estado inicial para el workflow de catalogación.
@@ -117,6 +120,7 @@ def create_initial_state(
         # Configuration
         use_diccionarios=use_diccionarios,
         llm_provider=llm_provider,
+        campos_manuales_lista=campos_manuales_lista,
 
         # Processing state (all False/None initially)
         adjuntos_descargados=False,
@@ -128,6 +132,7 @@ def create_initial_state(
         # Results (all None initially)
         resultado_adjuntos=None,
         resultado_diccionarios=None,
+        resultado_campos_manuales=None,
         resultado_final=None,
 
         # Metadata

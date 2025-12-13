@@ -8,7 +8,7 @@ connecting all nodes in the proper sequence with conditional edges.
 import os
 import sys
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from langgraph.graph import StateGraph, END
 
@@ -20,10 +20,12 @@ from agents.nodos_comp import (
     descargar_adjuntos_node,
     procesar_adjuntos_node,
     rag_adjuntos_node,
+    campos_manuales_node,
     rag_diccionarios_node,
     consolidar_resultado_node,
     should_continue_after_download,
     should_continue_after_processing,
+    should_extract_campos_manuales,
     should_use_diccionarios
 )
 
@@ -47,6 +49,12 @@ def create_catalogacion_graph():
     procesar_adjuntos
       ↓ (si exitoso)
     rag_adjuntos
+      ↓
+    ┌────────────────────┐
+    │ ¿campos_manuales?  │
+    └────────────────────┘
+      ↓ Sí                ↓ No
+    campos_manuales     rag_adjuntos (continúa)
       ↓
     ┌─────────────┐
     │ ¿usar_dic?  │
@@ -79,10 +87,13 @@ def create_catalogacion_graph():
     # Nodo 3: RAG con adjuntos
     workflow.add_node("rag_adjuntos", rag_adjuntos_node)
 
-    # Nodo 4: RAG con diccionarios (normalización)
+    # Nodo 4: Extracción paralela de campos manuales
+    workflow.add_node("campos_manuales", campos_manuales_node)
+
+    # Nodo 5: RAG con diccionarios (normalización)
     workflow.add_node("rag_diccionarios", rag_diccionarios_node)
 
-    # Nodo 5: Consolidar resultado final
+    # Nodo 6: Consolidar resultado final
     workflow.add_node("consolidar_resultado", consolidar_resultado_node)
 
     # ========== DEFINIR PUNTO DE ENTRADA ==========
@@ -111,9 +122,20 @@ def create_catalogacion_graph():
         }
     )
 
-    # Edge 3: rag_adjuntos -> rag_diccionarios o consolidar (condicional)
+    # Edge 3: rag_adjuntos -> campos_manuales o rag_diccionarios o consolidar (condicional)
     workflow.add_conditional_edges(
         "rag_adjuntos",
+        should_extract_campos_manuales,
+        {
+            "campos_manuales": "campos_manuales",
+            "rag_diccionarios": "rag_diccionarios",
+            "consolidar_resultado": "consolidar_resultado"
+        }
+    )
+
+    # Edge 4: campos_manuales -> rag_diccionarios o consolidar (condicional)
+    workflow.add_conditional_edges(
+        "campos_manuales",
         should_use_diccionarios,
         {
             "rag_diccionarios": "rag_diccionarios",
@@ -121,10 +143,10 @@ def create_catalogacion_graph():
         }
     )
 
-    # Edge 4: rag_diccionarios -> consolidar_resultado (siempre)
+    # Edge 5: rag_diccionarios -> consolidar_resultado (siempre)
     workflow.add_edge("rag_diccionarios", "consolidar_resultado")
 
-    # Edge 5: consolidar_resultado -> END (siempre)
+    # Edge 6: consolidar_resultado -> END (siempre)
     workflow.add_edge("consolidar_resultado", END)
 
     # ========== COMPILAR GRAFO ==========
@@ -144,7 +166,8 @@ def ejecutar_catalogacion(
     payload: Dict[str, Any],
     use_diccionarios: bool = True,
     llm_provider: str = None,
-    downloader: Any = None
+    downloader: Any = None,
+    campos_manuales_lista: List[str] = None
 ) -> Dict[str, Any]:
     """
     Ejecuta el workflow completo de catalogación usando el grafo.
@@ -185,7 +208,8 @@ def ejecutar_catalogacion(
         rut_proveedor=rut_proveedor,
         payload=payload,
         use_diccionarios=use_diccionarios,
-        llm_provider=llm_provider
+        llm_provider=llm_provider,
+        campos_manuales_lista=campos_manuales_lista
     )
 
     # Agregar downloader al state si se proporcionó

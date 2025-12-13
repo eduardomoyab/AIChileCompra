@@ -69,7 +69,8 @@ def extraer_atributos(
     rut_proveedor: str,
     use_diccionarios: bool = True,
     llm_provider: str = None,
-    downloader: Any = None
+    downloader: Any = None,
+    campos_manuales_lista: List[str] = None
 ) -> Dict[str, Any]:
     """
     Extrae atributos de un producto usando el flujo completo de catalogación.
@@ -137,7 +138,8 @@ def extraer_atributos(
             payload=payload,
             use_diccionarios=use_diccionarios,
             llm_provider=llm_provider,
-            downloader=downloader
+            downloader=downloader,
+            campos_manuales_lista=campos_manuales_lista
         )
     else:
         raise ValueError(

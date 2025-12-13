@@ -14,6 +14,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, validator
 from dotenv import load_dotenv
 
@@ -52,6 +53,16 @@ app.add_middleware(
 
 # API Key desde .env
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-here")
+
+api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
+
+async def require_api_key(x_api_key: Optional[str] = Depends(api_key_header)):
+    if not x_api_key or x_api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key inválida"
+        )
+    return x_api_key
 
 # ========== GLOBAL SESSION ==========
 
@@ -159,6 +170,7 @@ class CatalogarRequest(BaseModel):
     rut_proveedor: str = Field(..., description="RUT del proveedor")
     use_diccionarios: bool = Field(True, description="Si usar normalización con diccionarios")
     llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
+    campos_manuales: Optional[List[str]] = Field(None, description="Lista de campos adicionales a extraer en paralelo (ej: ['pantalla', 'procesador'])")
 
     @validator('llm_provider')
     def validar_llm_provider(cls, v):
@@ -184,7 +196,8 @@ class CatalogarRequest(BaseModel):
                 "codigo_cotizacion": "12345678",
                 "rut_proveedor": "76123456-7",
                 "use_diccionarios": True,
-                "llm_provider": "gemini"
+                "llm_provider": "gemini",
+                "campos_manuales": ["pantalla", "procesador"]
             }
         }
 
@@ -273,8 +286,9 @@ async def health_check():
     )
 
 
-@app.post("/catalogar", response_model=CatalogarResponse, dependencies=[Depends(verify_api_key)])
-async def catalogar_producto(request: CatalogarRequest):
+@app.post("/catalogar", response_model=CatalogarResponse)
+async def catalogar_producto(request: CatalogarRequest,
+                             api_key: str = Depends(require_api_key)):
     """
     Cataloga un producto individual.
 
@@ -304,7 +318,8 @@ async def catalogar_producto(request: CatalogarRequest):
             rut_proveedor=request.rut_proveedor,
             use_diccionarios=request.use_diccionarios,
             llm_provider=request.llm_provider,
-            downloader=global_downloader
+            downloader=global_downloader,
+            campos_manuales_lista=request.campos_manuales
         )
 
         # Preparar response
