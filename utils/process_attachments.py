@@ -11,6 +11,12 @@ from openpyxl import load_workbook
 from bs4 import BeautifulSoup
 from typing import Optional, List
 
+try:
+    import xlrd  # Para archivos .xls (Excel antiguo)
+    HAS_XLRD = True
+except ImportError:
+    HAS_XLRD = False
+
 # Configuración por defecto
 MAX_PAGES = 15
 TEXT_THRESHOLD = 100
@@ -152,7 +158,7 @@ class AttachmentProcessor:
             return None
 
     def _extract_text_from_xlsx(self, xlsx_path: str) -> Optional[str]:
-        """Extrae texto de archivos Excel"""
+        """Extrae texto de archivos Excel (.xlsx)"""
         try:
             workbook = load_workbook(xlsx_path, data_only=True)
             text = ""
@@ -164,6 +170,24 @@ class AttachmentProcessor:
             return text
         except Exception as e:
             logging.error(f"Error extracting text from XLSX {xlsx_path}: {e}")
+            return None
+
+    def _extract_text_from_xls(self, xls_path: str) -> Optional[str]:
+        """Extrae texto de archivos Excel antiguos (.xls)"""
+        if not HAS_XLRD:
+            logging.warning(f"xlrd no instalado, no se puede procesar: {xls_path}")
+            return None
+        try:
+            workbook = xlrd.open_workbook(xls_path)
+            text = ""
+            for sheet in workbook.sheets():
+                for row_idx in range(sheet.nrows):
+                    row = sheet.row_values(row_idx)
+                    row_text = "\t".join([str(cell) if cell else "" for cell in row])
+                    text += row_text + "\n"
+            return text
+        except Exception as e:
+            logging.error(f"Error extracting text from XLS {xls_path}: {e}")
             return None
 
     def _extract_text_from_file(self, file_path: str) -> Optional[str]:
@@ -180,6 +204,8 @@ class AttachmentProcessor:
             return self._extract_text_from_html(file_path)
         elif ext.endswith('.xlsx'):
             return self._extract_text_from_xlsx(file_path)
+        elif ext.endswith('.xls'):
+            return self._extract_text_from_xls(file_path)
 
         return None
 
