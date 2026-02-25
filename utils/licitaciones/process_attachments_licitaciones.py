@@ -9,7 +9,8 @@ import os
 import logging
 from typing import List, Dict
 from PyPDF2 import PdfReader
-import easyocr
+import pytesseract
+from PIL import Image
 import unicodedata
 from docx import Document
 from openpyxl import load_workbook
@@ -48,14 +49,6 @@ class LicitacionAttachmentProcessor:
         self.output_folder = output_folder
         os.makedirs(output_folder, exist_ok=True)
 
-        # Inicializar OCR
-        try:
-            self.reader = easyocr.Reader(['es'], gpu=False)
-            logging.info("OCR inicializado correctamente")
-        except Exception as e:
-            logging.warning(f"No se pudo inicializar OCR: {e}")
-            self.reader = None
-
         self.skipped_files = set()
 
     def normalize_filename(self, filename: str) -> str:
@@ -88,12 +81,28 @@ class LicitacionAttachmentProcessor:
                 page_text = page.extract_text()
                 text += page_text + "\n\n"
 
-            # Si el texto es muy corto, probablemente es un PDF escaneado
-            if len(text.strip()) < self.TEXT_THRESHOLD and self.reader:
+            # Si el texto es muy corto, probablemente es un PDF escaneado → aplicar OCR
+            if len(text.strip()) < self.TEXT_THRESHOLD:
                 logging.info(f"PDF con poco texto, aplicando OCR: {os.path.basename(file_path)}")
-                # Aquí se podría implementar OCR con pdf2image + easyocr
-                # Por ahora retornamos el texto extraído
-                pass
+                try:
+                    import fitz
+                    doc = fitz.open(file_path)
+                    mat = fitz.Matrix(2, 2)
+                    ocr_texts = []
+                    for i in range(min(len(doc), self.MAX_PAGES)):
+                        pix = doc[i].get_pixmap(matrix=mat)
+                        mode = "RGBA" if pix.n == 4 else "RGB"
+                        pil_img = Image.frombytes(mode, [pix.w, pix.h], pix.samples)
+                        if pil_img.mode != "RGB":
+                            pil_img = pil_img.convert("RGB")
+                        ocr_text = pytesseract.image_to_string(pil_img, lang='spa')
+                        if ocr_text.strip():
+                            ocr_texts.append(ocr_text)
+                    doc.close()
+                    if ocr_texts:
+                        text = "\n\n".join(ocr_texts)
+                except Exception as e:
+                    logging.warning(f"OCR falló para {os.path.basename(file_path)}: {e}")
 
             return text.strip()
 
@@ -103,15 +112,9 @@ class LicitacionAttachmentProcessor:
 
     def extract_text_from_image(self, file_path: str) -> str:
         """Extrae texto de una imagen usando OCR."""
-        if not self.reader:
-            logging.warning("OCR no disponible")
-            return ""
-
         try:
-            result = self.reader.readtext(file_path, detail=0)
-            text = "\n".join(result)
-            return text
-
+            img = Image.open(file_path)
+            return pytesseract.image_to_string(img, lang='spa')
         except Exception as e:
             logging.exception(f"Error extrayendo texto de imagen {file_path}: {e}")
             return ""

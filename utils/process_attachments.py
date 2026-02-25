@@ -4,7 +4,8 @@ import unicodedata
 import gc
 from tqdm import tqdm
 from PyPDF2 import PdfReader
-import easyocr
+import pytesseract
+from PIL import Image
 from docx import Document
 from openpyxl import load_workbook
 from bs4 import BeautifulSoup
@@ -40,10 +41,7 @@ class AttachmentProcessor:
             self.output_path = os.path.abspath(output_path)
 
         self.blacklist = blacklist if blacklist else []
-        self.use_gpu = use_gpu
-
-        # Inicializar OCR reader
-        self.reader = easyocr.Reader(['es'], gpu=self.use_gpu)
+        self.use_gpu = use_gpu  # mantenido por compatibilidad, ignorado (pytesseract no usa GPU)
 
         # Archivos omitidos
         self.skipped_files = set()
@@ -89,7 +87,7 @@ class AttachmentProcessor:
         """
         Extrae texto de un PDF procesando página por página.
         - Páginas con texto nativo suficiente → extracción directa con PyPDF2.
-        - Páginas con poco/ningún texto      → OCR con PyMuPDF + EasyOCR (si ocr_ok=True).
+        - Páginas con poco/ningún texto      → OCR con PyMuPDF + pytesseract (si ocr_ok=True).
         """
         try:
             reader = PdfReader(pdf_path)
@@ -109,7 +107,6 @@ class AttachmentProcessor:
             # Paso 2: OCR solo en páginas que lo necesitan
             if pages_to_ocr:
                 import fitz
-                import numpy as np
 
                 logging.info(f"  OCR necesario en {len(pages_to_ocr)}/{len(pages_text)} páginas: {pages_to_ocr}")
                 doc = fitz.open(pdf_path)
@@ -119,12 +116,13 @@ class AttachmentProcessor:
                     if idx >= len(doc):
                         continue
                     pix = doc[idx].get_pixmap(matrix=mat)
-                    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
-                    if pix.n == 4:
-                        img = img[:, :, :3]
-                    result = self.reader.readtext(img, detail=0)
-                    if result:
-                        pages_text[idx] = '\n'.join(result)
+                    mode = "RGBA" if pix.n == 4 else "RGB"
+                    pil_img = Image.frombytes(mode, [pix.w, pix.h], pix.samples)
+                    if pil_img.mode != "RGB":
+                        pil_img = pil_img.convert("RGB")
+                    ocr_text = pytesseract.image_to_string(pil_img, lang='spa')
+                    if ocr_text.strip():
+                        pages_text[idx] = ocr_text
 
                 doc.close()
 
@@ -138,8 +136,8 @@ class AttachmentProcessor:
     def _extract_text_with_ocr(self, image_path: str) -> Optional[str]:
         """Extrae texto de imágenes usando OCR"""
         try:
-            result = self.reader.readtext(image_path, detail=0)
-            return '\n'.join(result)
+            img = Image.open(image_path)
+            return pytesseract.image_to_string(img, lang='spa')
         except Exception as e:
             logging.error(f"OCR error for {image_path}: {e}")
             return None
