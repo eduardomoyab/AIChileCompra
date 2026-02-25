@@ -8,15 +8,20 @@ load_dotenv()
 # Fix para conflicto de OpenMP con FAISS
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
+# CHROMA DESHABILITADO - Solo usamos FAISS ahora
+# from langchain_chroma import Chroma
 from langchain_core.documents import Document
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 
 def create_faiss_from_files(
     file_paths: List[str],
     metadatas: Optional[List[Dict[str, Any]]] = None,
-    embedding_model: str = "models/text-embedding-004"
+    embedding_model: str = "text-embedding-3-small",
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None
 ) -> FAISS:
     """
     Crea un vector store FAISS en memoria desde archivos de texto.
@@ -25,7 +30,9 @@ def create_faiss_from_files(
     Args:
         file_paths (List[str]): Rutas a los archivos de texto
         metadatas (List[Dict], optional): Metadata para cada archivo
-        embedding_model (str): Modelo de embeddings de Google
+        embedding_model (str): Modelo de embeddings de OpenAI
+        chunk_size (int, optional): Tamaño de los chunks. Si None, no hace chunking
+        chunk_overlap (int, optional): Overlap entre chunks. Si None, usa chunk_size/10
 
     Returns:
         FAISS: Vector store en memoria listo para usar
@@ -36,18 +43,20 @@ def create_faiss_from_files(
         >>>     {"codigo_cotizacion": "12345", "source_file": "file1.txt"},
         >>>     {"codigo_cotizacion": "12346", "source_file": "file2.txt"}
         >>> ]
+        >>> # Sin chunking
         >>> vectorstore = create_faiss_from_files(file_paths, metadatas)
-        >>> results = vectorstore.similarity_search("query", k=5)
+        >>> # Con chunking pequeño (para campos manuales)
+        >>> vectorstore = create_faiss_from_files(file_paths, metadatas, chunk_size=200, chunk_overlap=50)
     """
     # Validar API key
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("GOOGLE_API_KEY no está configurada en el archivo .env")
+        raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
 
     # Inicializar embeddings
-    embeddings = GoogleGenerativeAIEmbeddings(
+    embeddings = OpenAIEmbeddings(
         model=embedding_model,
-        google_api_key=api_key
+        api_key=api_key
     )
 
     # Leer archivos y crear documentos
@@ -72,6 +81,18 @@ def create_faiss_from_files(
     if not documents:
         raise ValueError("No se pudo leer ningún archivo")
 
+    # Aplicar chunking si se especificó
+    if chunk_size is not None:
+        overlap = chunk_overlap if chunk_overlap is not None else max(1, chunk_size // 10)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            length_function=len,
+            separators=["\n\n", "\n", ". ", " ", ""]
+        )
+        documents = text_splitter.split_documents(documents)
+        print(f"Documentos divididos en {len(documents)} chunks de ~{chunk_size} caracteres")
+
     # Crear FAISS en memoria
     vectorstore = FAISS.from_documents(documents, embeddings)
 
@@ -81,7 +102,7 @@ def create_faiss_from_files(
 def create_faiss_from_texts(
     texts: List[str],
     metadatas: Optional[List[Dict[str, Any]]] = None,
-    embedding_model: str = "models/text-embedding-004"
+    embedding_model: str = "text-embedding-3-small"
 ) -> FAISS:
     """
     Crea un vector store FAISS en memoria desde textos.
@@ -90,20 +111,20 @@ def create_faiss_from_texts(
     Args:
         texts (List[str]): Lista de textos
         metadatas (List[Dict], optional): Metadata para cada texto
-        embedding_model (str): Modelo de embeddings de Google
+        embedding_model (str): Modelo de embeddings de OpenAI
 
     Returns:
         FAISS: Vector store en memoria listo para usar
     """
     # Validar API key
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("GOOGLE_API_KEY no está configurada en el archivo .env")
+        raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
 
     # Inicializar embeddings
-    embeddings = GoogleGenerativeAIEmbeddings(
+    embeddings = OpenAIEmbeddings(
         model=embedding_model,
-        google_api_key=api_key
+        api_key=api_key
     )
 
     # Crear documentos
@@ -180,3 +201,15 @@ def _matches_filter(metadata: Dict[str, Any], filter: Dict[str, Any]) -> bool:
             return False
 
     return True
+
+
+# ========== CHROMA DESHABILITADO ==========
+# MIGRADO A FAISS - Chroma causaba overhead de telemetry y era lento
+# El código ahora usa FAISS para todo (adjuntos Y diccionarios)
+#
+# class VectorStoreManager:
+#     """
+#     DEPRECATED: Esta clase usaba Chroma para diccionarios pre-cargados.
+#     Ahora se usa FAISS para todo (ver retriever_diccionario_comp.py).
+#     """
+#     pass

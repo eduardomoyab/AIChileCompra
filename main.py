@@ -22,11 +22,13 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from extraer_atributos import extraer_atributos, extraer_atributos_lote, validar_payload
-from utils.get_attachments import MercadoPublicoAttachmentDownloader
+from extraer_atributos_licitaciones import extraer_atributos_licitacion
+from utils.langsmith_utils import set_langsmith
 
 # Cargar variables de entorno
 load_dotenv()
 
+#set_langsmith()
 # Configuración de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -63,49 +65,6 @@ async def require_api_key(x_api_key: Optional[str] = Depends(api_key_header)):
             detail="API Key inválida"
         )
     return x_api_key
-
-# ========== GLOBAL SESSION ==========
-
-# Instancia global del downloader con sesión persistente
-global_downloader = None
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Inicializa la sesión global al inicio del servidor"""
-    global global_downloader
-
-    logging.info("🚀 Iniciando servidor...")
-    logging.info("🔐 Iniciando sesión en ChileCompra...")
-
-    try:
-        # Crear downloader global
-        global_downloader = MercadoPublicoAttachmentDownloader(headless=True)
-
-        # Hacer login una sola vez
-        global_downloader.login_mercado_publico()
-
-        if global_downloader.token_bearer:
-            logging.info("✓ Sesión iniciada correctamente")
-            logging.info(f"✓ Token obtenido: {global_downloader.token_bearer[:20]}...")
-        else:
-            logging.error("❌ No se pudo obtener el token")
-
-    except Exception as e:
-        logging.error(f"❌ Error en login inicial: {e}")
-        logging.warning("⚠️  El servidor continuará pero necesitará login en cada request")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cierra la sesión al apagar el servidor"""
-    global global_downloader
-
-    if global_downloader and global_downloader.driver:
-        logging.info("🔒 Cerrando sesión...")
-        global_downloader.driver.quit()
-        logging.info("✓ Sesión cerrada")
-
 
 # ========== SECURITY ==========
 
@@ -163,14 +122,26 @@ class ProductoPayload(BaseModel):
 
 
 class CatalogarRequest(BaseModel):
-    """Modelo de request para catalogación de un producto"""
+    """Modelo de request para catalogación de un producto (Compra Ágil)"""
 
     payload: ProductoPayload = Field(..., description="Datos del producto a catalogar")
     codigo_cotizacion: str = Field(..., description="Código de la solicitud de cotización")
     rut_proveedor: str = Field(..., description="RUT del proveedor")
-    use_diccionarios: bool = Field(True, description="Si usar normalización con diccionarios")
+    use_diccionarios: bool = Field(False, description="Si usar normalización con diccionarios")
     llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
     campos_manuales: Optional[List[str]] = Field(None, description="Lista de campos adicionales a extraer en paralelo (ej: ['pantalla', 'procesador'])")
+    token_bearer: Optional[str] = Field(None, description="Token Bearer de Mercado Público. Si se provee, usa la API autenticada (servicios-compra-agil) en lugar del Buscador público.")
+
+
+class CatalogarLicitacionRequest(BaseModel):
+    """Modelo de request para catalogación de un producto de Licitación"""
+
+    payload: ProductoPayload = Field(..., description="Datos del producto a catalogar")
+    codigo_licitacion: str = Field(..., description="Código de la licitación (ej: 1234-567-LE24)")
+    rut_proveedor: str = Field(..., description="RUT del proveedor")
+    use_diccionarios: bool = Field(True, description="Si usar normalización con diccionarios")
+    llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
+    campos_manuales: Optional[List[str]] = Field(None, description="Lista de campos adicionales a extraer (ej: ['Pantalla (Pulgadas)', 'Procesador'])")
 
     @validator('llm_provider')
     def validar_llm_provider(cls, v):
@@ -193,13 +164,14 @@ class CatalogarRequest(BaseModel):
                     "DescripcionProductoProveedor": "NOTEBOOK HP PAVILION",
                     "productoname": "Notebook, laptop o computador portátil excepto Tablet PC"
                 },
-                "codigo_cotizacion": "12345678",
+                "codigo_licitacion": "1234-567-LE24",
                 "rut_proveedor": "76123456-7",
                 "use_diccionarios": True,
-                "llm_provider": "gemini",
-                "campos_manuales": ["pantalla", "procesador"]
+                "llm_provider": "gemini"
             }
         }
+
+
 
 
 class CatalogarLoteRequest(BaseModel):
@@ -311,14 +283,23 @@ async def catalogar_producto(request: CatalogarRequest,
     try:
         logging.info(f"Catalogando producto - Cotización: {request.codigo_cotizacion}, Proveedor: {request.rut_proveedor}")
 
-        # Ejecutar catalogación (usar downloader global si está disponible)
+        # Seleccionar downloader según si se proporcionó token
+        downloader = None
+        if request.token_bearer:
+            from utils.get_attachments import TokenAttachmentDownloader
+            downloader = TokenAttachmentDownloader(request.token_bearer)
+            logging.info("Usando TokenAttachmentDownloader (API autenticada)")
+        else:
+            logging.info("Usando BuscadorAttachmentDownloader (API pública)")
+
+        # Ejecutar catalogación
         resultado_completo = extraer_atributos(
             payload=request.payload.dict(),
             codigo_cotizacion=request.codigo_cotizacion,
             rut_proveedor=request.rut_proveedor,
             use_diccionarios=request.use_diccionarios,
             llm_provider=request.llm_provider,
-            downloader=global_downloader,
+            downloader=downloader,
             campos_manuales_lista=request.campos_manuales
         )
 
@@ -349,6 +330,80 @@ async def catalogar_producto(request: CatalogarRequest,
 
     except Exception as e:
         logging.exception(f"Error catalogando producto: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno: {str(e)}"
+        )
+
+
+@app.post("/catalogar/licitacion", response_model=CatalogarResponse)
+async def catalogar_licitacion(request: CatalogarLicitacionRequest,
+                                api_key: str = Depends(require_api_key)):
+    """
+    Cataloga un producto de LICITACIÓN.
+
+    Realiza el flujo completo:
+    1. Descarga adjuntos desde Mercado Público (anexos técnicos y económicos)
+    2. Procesa adjuntos (extracción de texto con OCR si es necesario)
+    3. Extrae atributos usando un LLM único con RAG sobre adjuntos
+    4. Normaliza con diccionarios (opcional)
+
+    **Requiere header:** `X-API-Key`
+
+    **Diferencias con /catalogar (Compra Ágil):**
+    - No requiere autenticación (licitaciones son públicas)
+    - Usa un único LLM en lugar de sistema de agentes
+    - Descarga anexos técnicos y económicos
+
+    **Returns:**
+    - `success`: Si la catalogación fue exitosa
+    - `resultado`: Diccionario con todos los atributos extraídos
+    - `errores`: Lista de errores encontrados
+    - `warnings`: Lista de advertencias
+    - `metadata`: Información adicional del proceso
+    """
+    try:
+        logging.info(f"Catalogando licitación - Código: {request.codigo_licitacion}, Proveedor: {request.rut_proveedor}")
+
+        # Ejecutar catalogación de licitación
+        resultado_completo = extraer_atributos_licitacion(
+            payload=request.payload.dict(),
+            codigo_licitacion=request.codigo_licitacion,
+            rut_proveedor=request.rut_proveedor,
+            use_diccionarios=request.use_diccionarios,
+            llm_provider=request.llm_provider,
+            campos_manuales=request.campos_manuales,
+            downloader=None  # No se usa para licitaciones
+        )
+
+        # Preparar response
+        response = CatalogarResponse(
+            success=resultado_completo.get('resultado_final') is not None,
+            resultado=resultado_completo.get('resultado_final'),
+            errores=resultado_completo.get('errores', []),
+            warnings=resultado_completo.get('warnings', []),
+            metadata={
+                "codigo_licitacion": request.codigo_licitacion,
+                "rut_proveedor": request.rut_proveedor,
+                "categoria": request.payload.Categoria,
+                "adjuntos_descargados": resultado_completo.get('adjuntos_descargados', False),
+                "adjuntos_procesados": resultado_completo.get('adjuntos_procesados', False),
+                "use_diccionarios": request.use_diccionarios,
+                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+                "tipo": "licitacion"
+            }
+        )
+
+        logging.info(f"Catalogación licitación completada - Código: {request.codigo_licitacion}, Success: {response.success}")
+
+        return response
+
+    except ValueError as e:
+        logging.error(f"Error de validación: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    except Exception as e:
+        logging.exception(f"Error catalogando licitación: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno: {str(e)}"

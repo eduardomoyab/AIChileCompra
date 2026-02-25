@@ -11,6 +11,7 @@ import logging
 import time
 import asyncio
 import re
+import shutil
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -290,13 +291,18 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
     try:
         catalogador = CatalogacionComputadores(llm_provider=state.get('llm_provider'))
 
-        # Ejecutar catalogación completa (incluye diccionarios)
-        resultado = catalogador.catalogar_producto(
-            payload=state['payload'],
-            codigo_cotizacion=state['codigo_cotizacion'],
-            rut_proveedor=state['rut_proveedor'],
-            processed_path=state['processed_path'],
-            use_diccionarios=True  # Con diccionarios
+        # Mezclar resultado_adjuntos con campos_manuales antes de aplicar diccionarios
+        resultado_previo = dict(state['resultado_adjuntos'])
+        if state.get('resultado_campos_manuales'):
+            logging.info("Mezclando campos manuales con resultado de adjuntos...")
+            for campo, valor in state['resultado_campos_manuales'].items():
+                resultado_previo[campo] = valor
+            logging.info(f"  Campos mezclados: {list(state['resultado_campos_manuales'].keys())}")
+
+        # Aplicar diccionarios al resultado previo (adjuntos + campos manuales)
+        # Ejecuta normalización RAG + completar núcleos/hilos desde Excel
+        resultado = catalogador.aplicar_diccionarios(
+            resultado_adjuntos=resultado_previo
         )
 
         state['resultado_diccionarios'] = resultado
@@ -336,24 +342,41 @@ def consolidar_resultado_node(state: CatalogacionState) -> CatalogacionState:
 
     # Verificar que haya un resultado final
     if not state.get('resultado_final'):
-        error_msg = "No hay resultado final disponible"
-        state = add_error(state, error_msg)
-        logging.error(error_msg)
-    else:
-        # Si hay campos manuales extraídos, agregarlos al resultado final
-        if state.get('resultado_campos_manuales'):
-            logging.info("Consolidando campos manuales en resultado final...")
+        # Si no hay resultado_final pero hay resultado_adjuntos, usarlo
+        if state.get('resultado_adjuntos'):
+            logging.info("Usando resultado_adjuntos como resultado_final (tipo 'Otro' o sin diccionarios)")
+            state['resultado_final'] = state['resultado_adjuntos']
+        else:
+            error_msg = "No hay resultado final disponible"
+            state = add_error(state, error_msg)
+            logging.error(error_msg)
 
-            # Copiar resultado final actual
-            resultado_consolidado = dict(state['resultado_final'])
+    # Si hay campos manuales extraídos, mezclarlos en el resultado final (nivel raíz)
+    if state.get('resultado_final') and state.get('resultado_campos_manuales'):
+        logging.info("Consolidando campos manuales en resultado final...")
 
-            # Agregar campos manuales
-            resultado_consolidado['campos_manuales'] = state['resultado_campos_manuales']
+        # Copiar resultado final actual
+        resultado_consolidado = dict(state['resultado_final'])
 
-            # Actualizar estado
-            state['resultado_final'] = resultado_consolidado
+        # Mezclar campos manuales en el nivel raíz (NO como sub-objeto)
+        # IMPORTANTE: NO sobrescribir valores que ya fueron actualizados por diccionarios
+        for campo, valor in state['resultado_campos_manuales'].items():
+            valor_actual = resultado_consolidado.get(campo)
 
-            logging.info(f"✓ Campos manuales agregados: {list(state['resultado_campos_manuales'].keys())}")
+            # Solo sobrescribir si:
+            # 1. No existe el campo en resultado_consolidado, O
+            # 2. El valor actual es "No disponible" o "No especificado" PERO el nuevo valor no lo es
+            if not valor_actual or \
+               (valor_actual in ['No disponible', 'No especificado'] and valor not in ['No disponible', 'No especificado']):
+                resultado_consolidado[campo] = valor
+            # Si el valor actual ya fue completado (no es "No disponible/especificado"), mantenerlo
+            elif valor_actual not in ['No disponible', 'No especificado']:
+                logging.debug(f"  Manteniendo valor actualizado para {campo}: {valor_actual}")
+
+        # Actualizar estado
+        state['resultado_final'] = resultado_consolidado
+
+        logging.info(f"✓ Campos manuales consolidados en raíz: {list(state['resultado_campos_manuales'].keys())}")
 
     # Logging de resumen
     if state.get('errores'):
@@ -363,6 +386,20 @@ def consolidar_resultado_node(state: CatalogacionState) -> CatalogacionState:
 
     if state.get('warnings'):
         logging.info(f"ℹ️  {len(state['warnings'])} warnings generados")
+
+    # Limpiar archivos temporales (adjuntos descargados y procesados)
+    try:
+        # Eliminar adjuntos descargados
+        if state.get('adjuntos_path') and os.path.exists(state['adjuntos_path']):
+            shutil.rmtree(state['adjuntos_path'])
+            logging.info(f"✓ Adjuntos descargados eliminados: {state['adjuntos_path']}")
+
+        # Eliminar adjuntos procesados
+        if state.get('processed_path') and os.path.exists(state['processed_path']):
+            shutil.rmtree(state['processed_path'])
+            logging.info(f"✓ Adjuntos procesados eliminados: {state['processed_path']}")
+    except Exception as e:
+        logging.warning(f"⚠️  No se pudieron eliminar archivos temporales: {e}")
 
     logging.info(f"✓ Catalogación finalizada para ROWNUM {state['payload'].get('ROWNUM')}")
 
@@ -692,13 +729,22 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             for f in txt_files
         ]
 
-        # Crear FAISS en memoria
-        vectorstore = create_faiss_from_files(txt_files, metadatas)
-        logging.info(f"✓ FAISS creado")
+        # Crear FAISS en memoria con chunks pequeños para campos manuales
+        chunk_size = int(os.getenv('CAMPOS_MANUALES_CHUNK_SIZE', '200'))
+        chunk_overlap = int(os.getenv('CAMPOS_MANUALES_CHUNK_OVERLAP', '50'))
+
+        logging.info(f"Creando FAISS con chunks de {chunk_size} caracteres (overlap: {chunk_overlap})...")
+        vectorstore = create_faiss_from_files(
+            txt_files,
+            metadatas,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+        logging.info(f"✓ FAISS creado con chunking optimizado para campos manuales")
 
         # Obtener configuración
         llm_provider = state.get('llm_provider') or os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')
-        k = int(os.getenv('SEARCH_K_ADJUNTOS', '5'))
+        k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))  # K específico para campos manuales
         payload = state.get('payload')
 
         # Ejecutar extracción en paralelo (con límite de workers para evitar rate limiting)
@@ -803,9 +849,18 @@ def should_use_diccionarios(state: CatalogacionState) -> str:
     Returns:
         str: Nombre del siguiente nodo
     """
-    if state.get('use_diccionarios', True) and state.get('resultado_adjuntos'):
+    use_dic = state.get('use_diccionarios', True)
+    has_result = state.get('resultado_adjuntos') is not None
+
+    logging.info(f"[DECISIÓN] ¿Usar diccionarios?")
+    logging.info(f"  - use_diccionarios: {use_dic}")
+    logging.info(f"  - tiene resultado_adjuntos: {has_result}")
+
+    if use_dic and has_result:
+        logging.info(f"  → Ir a: rag_diccionarios")
         return "rag_diccionarios"
     else:
+        logging.info(f"  → Ir a: consolidar_resultado")
         return "consolidar_resultado"
 
 
@@ -821,12 +876,19 @@ def should_extract_campos_manuales(state: CatalogacionState) -> str:
     """
     campos_manuales = state.get('campos_manuales_lista', [])
 
+    # Verificar si el tipo de producto es "Otro"
+    resultado_adjuntos = state.get('resultado_adjuntos', {})
+    tipo_producto = resultado_adjuntos.get('Tipo', '').strip()
+
+    # Si el tipo es "Otro", saltar campos manuales Y diccionarios
+    if tipo_producto.lower() == 'otro':
+        logging.info("Tipo de producto es 'Otro' - saltando extracción de campos manuales y RAG diccionarios")
+        return "consolidar_resultado"
+
     # Si hay campos manuales y se procesaron adjuntos, ejecutar extracción paralela
     if campos_manuales and len(campos_manuales) > 0 and state.get('adjuntos_procesados'):
         return "campos_manuales"
     else:
-        # Si no hay campos manuales, saltar a diccionarios o consolidar según configuración
-        if state.get('use_diccionarios', True):
-            return "rag_diccionarios"
-        else:
-            return "consolidar_resultado"
+        # Si NO hay campos manuales, ir directo a consolidar (sin diccionarios)
+        # Los diccionarios solo se aplican DESPUÉS de extraer campos manuales
+        return "consolidar_resultado"
