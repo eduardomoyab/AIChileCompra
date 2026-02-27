@@ -185,21 +185,81 @@ curl -X POST http://localhost:8000/catalogar/licitacion \
 
 ---
 
+### `POST /catalogar/texto` — Texto Directo (sin adjuntos)
+
+Cataloga un producto directamente desde texto, **sin descargar adjuntos ni usar RAG**. El nombre, descripción y/o tabla de atributos del producto se pasan directo al LLM como contexto.
+
+Útil para catalogación masiva desde bases de datos existentes, normalización de catálogos de proveedores, o pruebas sin acceso a la API de Mercado Público.
+
+**Request body:**
+
+```json
+{
+  "nombre_producto": "Laptop HP Pavilion 15-EH1005LA",
+  "descripcion": "Notebook HP con procesador AMD Ryzen 7, 8GB RAM, 512GB SSD NVMe, pantalla 15.6\"",
+  "atributos": {
+    "Procesador": "AMD Ryzen 7 5700U",
+    "RAM": "8 GB DDR4",
+    "Almacenamiento": "512 GB SSD M.2 NVMe",
+    "Pantalla": "15.6 pulgadas FHD",
+    "Sistema Operativo": "Windows 11 Home"
+  },
+  "categoria": "Computadores",
+  "use_diccionarios": true,
+  "llm_provider": "gemini",
+  "campos_manuales": ["Procesador", "RAM (GB)", "Tipo RAM", "Almacenamiento (GB)", "Pantalla (Pulgadas)"]
+}
+```
+
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `nombre_producto` | string | — | Nombre del producto (**requerido**) |
+| `descripcion` | string\|null | `null` | Descripción libre del producto |
+| `atributos` | objeto\|null | `null` | Tabla de especificaciones técnicas en formato `{atributo: valor}` |
+| `categoria` | string | `"Computadores"` | Categoría del producto. Solo `"Computadores"` soportado |
+| `use_diccionarios` | bool | `true` | Normalizar con diccionarios técnicos |
+| `llm_provider` | string\|null | `null` | `"openai"`, `"gemini"` o `"deepseek"`. `null` usa `DEFAULT_LLM_PROVIDER` del `.env` |
+| `campos_manuales` | lista\|null | `null` | Campos adicionales a extraer (ej: `["Pantalla (Pulgadas)", "Procesador"]`). `null` = solo atributos fijos |
+
+**Categorías soportadas:** `Computadores`
+
+**Ejemplo:**
+
+```bash
+curl -X POST http://localhost:8000/catalogar/texto \
+  -H "x-api-key: tu-clave" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre_producto": "Laptop HP Pavilion 15-EH1005LA",
+    "descripcion": "Notebook HP con procesador AMD Ryzen 7, 8GB RAM, 512GB SSD NVMe",
+    "atributos": {
+      "Procesador": "AMD Ryzen 7 5700U",
+      "RAM": "8 GB DDR4",
+      "Almacenamiento": "512 GB SSD M.2 NVMe"
+    },
+    "use_diccionarios": true,
+    "campos_manuales": ["Procesador", "RAM (GB)", "Pantalla (Pulgadas)"]
+  }'
+```
+
+---
+
 ## Diferencias entre endpoints
 
-| | `/catalogar` (Compra Ágil) | `/catalogar/licitacion` |
-|---|---|---|
-| Tipo de proceso | Solicitud de cotización | Licitación pública |
-| Código requerido | `codigo_cotizacion` | `codigo_licitacion` |
-| Autenticación Mercado Público | Opcional (`token_bearer`) | No requerida |
-| `use_diccionarios` default | `false` | `true` |
-| Adjuntos | Archivos del proveedor (ofertas) | Anexos técnicos y económicos |
+| | `/catalogar` (Compra Ágil) | `/catalogar/licitacion` | `/catalogar/texto` |
+|---|---|---|---|
+| Tipo de proceso | Solicitud de cotización | Licitación pública | Texto directo |
+| Código requerido | `codigo_cotizacion` | `codigo_licitacion` | Ninguno |
+| Autenticación Mercado Público | Opcional (`token_bearer`) | No requerida | No requerida |
+| `use_diccionarios` default | `false` | `true` | `true` |
+| Adjuntos | Archivos del proveedor (ofertas) | Anexos técnicos y económicos | No usa adjuntos |
+| RAG / embeddings | Sí | Sí | No (texto directo al LLM) |
 
 ---
 
 ## Response
 
-Ambos endpoints devuelven la misma estructura:
+Los tres endpoints devuelven la misma estructura:
 
 ```json
 {
