@@ -297,50 +297,113 @@ class CatalogacionComputadores:
             logging.error(f"Error creando FAISS: {e}")
             return self._create_empty_result(payload.get('ROWNUM'))
 
-        # Crear chain RAG para adjuntos
-        template_adj = self.config_rag_adj['rag_template']
-        prompt_adj = PromptTemplate.from_template(template_adj)
-
-        # Ejecutar retrieval
-        json_str = str([payload])
-        augmented_query = self.augment_query(json_str)
-        k_adj = int(os.getenv('SEARCH_K_ADJUNTOS', '5'))
-        retrieved_docs = vectorstore.similarity_search(augmented_query, k=k_adj)
-
-        # Log de documentos recuperados
-        logging.info(f"Documentos recuperados del RAG: {len(retrieved_docs)} documentos")
-        for i, doc in enumerate(retrieved_docs, 1):
-            content_preview = doc.page_content[:150].replace('\n', ' ')
-            logging.info(f"  Doc {i}: {content_preview}...")
-
-        # Formatear contexto
-        context = self.format_docs(retrieved_docs)
-        logging.info(f"Contexto RAG (primeros 300 chars): {context[:300]}...")
-
-        # Crear y ejecutar chain
-        rag_chain_adj = (
-            prompt_adj
-            | self.llm
-            | StrOutputParser()
-        )
-
-        # Ejecutar con contexto y pregunta
-        response_adj = rag_chain_adj.invoke({"context": context, "question": json_str})
-
-        # Parsear respuesta (viene como tupla)
-        resultado_adj = self._parse_response_adjuntos(response_adj)
+        # Ejecutar RAG sobre el vectorstore creado
+        resultado_adj = self._ejecutar_rag_desde_vectorstore(payload, vectorstore)
 
         if not resultado_adj:
-            logging.warning(f"No se pudo parsear la respuesta de adjuntos para ROWNUM {payload.get('ROWNUM')}")
             return self._create_empty_result(payload.get('ROWNUM'))
 
         # PASO 2 y 3: DESHABILITADOS en este método
         # Este método solo extrae de adjuntos. Los diccionarios se aplican después via aplicar_diccionarios()
         logging.info(f"[INFO] PASO 2 y 3 deshabilitados en catalogar_producto - usar aplicar_diccionarios() después")
-        resultado_final = resultado_adj
 
         logging.info(f"✓ Catalogación completada para ROWNUM {payload.get('ROWNUM')}")
-        return resultado_final
+        return resultado_adj
+
+    def _ejecutar_rag_desde_vectorstore(
+        self,
+        payload: Dict[str, Any],
+        vectorstore
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Ejecuta el chain RAG de extracción de atributos sobre un vectorstore FAISS ya construido.
+
+        Método interno compartido por catalogar_producto() y catalogar_desde_textos().
+        """
+        template_adj = self.config_rag_adj['rag_template']
+        prompt_adj = PromptTemplate.from_template(template_adj)
+
+        json_str = str([payload])
+        augmented_query = self.augment_query(json_str)
+        k_adj = int(os.getenv('SEARCH_K_ADJUNTOS', '5'))
+        retrieved_docs = vectorstore.similarity_search(augmented_query, k=k_adj)
+
+        logging.info(f"Documentos recuperados del RAG: {len(retrieved_docs)} documentos")
+        for i, doc in enumerate(retrieved_docs, 1):
+            content_preview = doc.page_content[:150].replace('\n', ' ')
+            logging.info(f"  Doc {i}: {content_preview}...")
+
+        context = self.format_docs(retrieved_docs)
+        logging.info(f"Contexto RAG (primeros 300 chars): {context[:300]}...")
+
+        rag_chain_adj = (
+            prompt_adj
+            | self.llm
+            | StrOutputParser()
+        )
+        response_adj = rag_chain_adj.invoke({"context": context, "question": json_str})
+        resultado = self._parse_response_adjuntos(response_adj)
+
+        if not resultado:
+            logging.warning(f"No se pudo parsear la respuesta de adjuntos para ROWNUM {payload.get('ROWNUM')}")
+            return None
+
+        logging.info(f"✓ RAG completado para ROWNUM {payload.get('ROWNUM')}")
+        return resultado
+
+    def catalogar_desde_texto_sin_rag(
+        self,
+        payload: Dict[str, Any],
+        texto_completo: str
+    ) -> Dict[str, Any]:
+        """
+        Cataloga un producto pasando el texto directamente al LLM, SIN RAG.
+
+        No utiliza FAISS ni embeddings: el texto completo se inyecta como
+        contexto en el prompt, eliminando el costo de embeddings para casos
+        donde el texto ya es corto y conocido (nombre + descripción + atributos).
+
+        Usar cuando el input cabe completo en el contexto del LLM (~4000 chars o menos).
+
+        Args:
+            payload: Información del producto (ROWNUM, Categoria, descripciones)
+            texto_completo: Texto del producto que se usará como contexto del prompt
+
+        Returns:
+            dict: Resultado con Tipo, Part Number y Modelo
+        """
+        self._initialize_llms()
+
+        logging.info(
+            f"[SIN RAG] Extrayendo atributos directamente con LLM "
+            f"(ROWNUM: {payload.get('ROWNUM')}, {len(texto_completo)} chars)"
+        )
+
+        if not texto_completo or not texto_completo.strip():
+            logging.warning("Texto vacío")
+            return self._create_empty_result(payload.get('ROWNUM'))
+
+        template_adj = self.config_rag_adj['rag_template']
+        prompt_adj = PromptTemplate.from_template(template_adj)
+
+        json_str = str([payload])
+
+        rag_chain = (
+            prompt_adj
+            | self.llm
+            | StrOutputParser()
+        )
+
+        # Pasa el texto completo como contexto — sin FAISS, sin embeddings
+        response = rag_chain.invoke({"context": texto_completo, "question": json_str})
+        resultado = self._parse_response_adjuntos(response)
+
+        if not resultado:
+            logging.warning(f"No se pudo parsear respuesta para ROWNUM {payload.get('ROWNUM')}")
+            return self._create_empty_result(payload.get('ROWNUM'))
+
+        logging.info(f"✓ Extracción sin RAG completada para ROWNUM {payload.get('ROWNUM')}")
+        return resultado
 
     def catalogar_lote(
         self,

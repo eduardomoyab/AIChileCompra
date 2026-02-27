@@ -11,7 +11,8 @@
       "Bash(python -m json.tool:*)",
       "Bash(python -m py_compile:*)",
       "Bash(python -m uvicorn:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(find /Users/rodrigoguerra/git/AIChileCompra -name \"requirements.txt\" -exec cat {} ;)"
     ],
     "deny": [],
     "ask": []
