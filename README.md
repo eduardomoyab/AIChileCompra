@@ -1,70 +1,31 @@
-# ChileCompra GenAI - Sistema de Catalogación Automática
+# AIChileCompra — API de Catalogación Automática
 
-Sistema de catalogación automática de productos en licitaciones públicas usando LLM, RAG (Retrieval Augmented Generation) y LangGraph.
+API REST para extracción automática de atributos de productos en compras públicas chilenas, usando LLM, RAG y LangGraph.
 
-## Características
+---
 
-- **Extracción automática de atributos** de productos usando LLM con contexto de documentos adjuntos
-- **RAG (Retrieval Augmented Generation)** con FAISS para búsqueda semántica en adjuntos
-- **Normalización con diccionarios** de valores estándar
-- **Extracción paralela de campos personalizados** con agentes especializados
-- **Workflow orquestado con LangGraph** para flujos complejos
-- **Multi-LLM support**: OpenAI, Google Gemini, DeepSeek
-- **API REST con FastAPI** para integración fácil
-- **Sesión persistente** con Mercado Público para descargas optimizadas
+## Inicio rápido
 
-## Arquitectura
+### 1. Configurar el entorno
 
-### Workflow de Catalogación
-
-```
-START
-  ↓
-descargar_adjuntos (Descarga archivos desde Mercado Público)
-  ↓
-procesar_adjuntos (Extracción de texto de PDFs, DOCX, XLSX, etc.)
-  ↓
-rag_adjuntos (Extracción de atributos base con RAG)
-  ↓
-┌─────────────────────┐
-│ ¿campos_manuales?   │ (Si el usuario especificó campos adicionales)
-└─────────────────────┘
-  ↓ Sí               ↓ No
-campos_manuales      │
-(N agentes en paralelo)
-  ↓                  ↓
-┌──────────────┐
-│ ¿usar_dic?   │ (Si usar normalización con diccionarios)
-└──────────────┘
-  ↓ Sí    ↓ No
-rag_diccionarios  consolidar_resultado
-  ↓
-consolidar_resultado (Merge de todos los resultados)
-  ↓
-END
-```
-
-### Componentes Principales
-
-- **LangGraph**: Orquestación del workflow con estados y transiciones
-- **FAISS**: Vector store en memoria para búsqueda semántica
-- **LangChain**: Framework para integración con LLMs
-- **FastAPI**: API REST con validación automática
-- **Selenium**: Automatización de descarga de adjuntos
-
-## Instalación
-
-### Requisitos
-
-- Python 3.10+
-- Firefox + GeckoDriver (para descarga de adjuntos)
-
-### 1. Clonar repositorio
+Copia `.env.example` a `.env` y edita las claves necesarias:
 
 ```bash
-git clone <repository-url>
-cd AIChileCompra
+cp .env.example .env
 ```
+
+Campos mínimos a cambiar:
+
+| Variable | Descripción |
+|---|---|
+| `OPENAI_API_KEY` | API key de OpenAI — requerida siempre (usada para embeddings) |
+| `API_KEY` | Clave para autenticar las llamadas a esta API |
+| `GOOGLE_API_KEY` | Solo si usas `gemini` como proveedor LLM |
+| `DEEPSEEK_API_KEY` | Solo si usas `deepseek` como proveedor LLM |
+
+El proveedor por defecto se controla con `DEFAULT_LLM_PROVIDER` (`openai`, `gemini` o `deepseek`).
+
+> **Nota:** `OPENAI_API_KEY` es siempre necesaria aunque uses Gemini o DeepSeek como LLM, porque los embeddings FAISS usan `text-embedding-3-small` de OpenAI.
 
 ### 2. Instalar dependencias
 
@@ -72,63 +33,35 @@ cd AIChileCompra
 pip install -r requirements.txt
 ```
 
-### 3. Configurar variables de entorno
-
-Copiar `.env.example` a `.env` y configurar:
-
-```bash
-cp .env.example .env
-```
-
-Editar `.env` con tus credenciales:
-
-```bash
-# Proveedor de LLM por defecto (openai, gemini, deepseek)
-DEFAULT_LLM_PROVIDER=openai
-
-# OpenAI Configuration
-OPENAI_API_KEY=tu_api_key_aqui
-OPENAI_MODEL=gpt-4o-mini
-
-# Google Gemini Configuration
-GOOGLE_API_KEY=tu_google_api_key_aqui
-GEMINI_MODEL=gemini-2.5-flash
-
-# ChileCompra - Clave Única Credentials
-CU_USER=tu_rut_aqui
-CU_PASSWORD=tu_password_aqui
-GECKO_DRIVER_PATH=C:/SeleniumDrivers/geckodriver.exe
-
-# API Configuration
-API_KEY=tu-api-key-segura
-API_HOST=0.0.0.0
-API_PORT=8000
-```
-
-### 4. Iniciar servidor
+### 3. Iniciar la API
 
 ```bash
 python main.py
 ```
 
-El servidor estará disponible en `http://localhost:8000`
+La API queda disponible en `http://localhost:8000`.
+Documentación interactiva: `http://localhost:8000/docs`
 
-- **Documentación interactiva**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+---
 
-## Uso
+## Autenticación
 
-### Endpoint Principal: `/catalogar`
+Todos los endpoints requieren el header `x-api-key` con el valor configurado en `API_KEY` del `.env`.
 
-#### Request
-
-**Headers:**
-```
-X-API-Key: tu-api-key-configurada
-Content-Type: application/json
+```bash
+curl -H "x-api-key: tu-clave" ...
 ```
 
-**Body:**
+---
+
+## Endpoints
+
+### `POST /catalogar` — Compra Ágil
+
+Cataloga un producto de una **solicitud de cotización** (Compra Ágil). Descarga los adjuntos del proveedor desde Mercado Público y extrae atributos usando RAG.
+
+**Request body:**
+
 ```json
 {
   "payload": {
@@ -139,7 +72,74 @@ Content-Type: application/json
   },
   "codigo_cotizacion": "377-164-COT24",
   "rut_proveedor": "76292976-7",
-  "use_diccionarios": false,
+  "use_diccionarios": true,
+  "campos_manuales": [
+    "Pantalla (Pulgadas)",
+    "Procesador",
+    "Marca",
+    "Tipo RAM",
+    "RAM (GB)",
+    "Tipo Almacenamiento",
+    "Almacenamiento (GB)",
+    "Hilos",
+    "Nucleos"
+  ],
+  "token_bearer" : "TOKEN OBTENIDO AL LOGEAR"
+}
+```
+
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `payload` | objeto | — | Datos del producto (ver estructura arriba) |
+| `codigo_cotizacion` | string | — | Código de la cotización (ej: `1058094-1307-COT23`) |
+| `rut_proveedor` | string | — | RUT del proveedor (ej: `76.274.027-3`) |
+| `use_diccionarios` | bool | `false` | Normalizar procesador/RAM/almacenamiento con diccionarios |
+| `llm_provider` | string\|null | `null` | `"openai"`, `"gemini"` o `"deepseek"`. `null` usa `DEFAULT_LLM_PROVIDER` del `.env` |
+| `campos_manuales` | lista\|null | `null` | Campos adicionales a extraer (ej: `["Pantalla (Pulgadas)", "Procesador"]`). `null` = solo atributos fijos |
+| `token_bearer` | string\|null | `null` | Token Bearer de Mercado Público. Si se provee, usa la API autenticada; si no, usa el Buscador público |
+
+**Categorías soportadas:** `Computadores`
+
+**Ejemplo:**
+
+```bash
+curl -X POST http://localhost:8000/catalogar \
+  -H "x-api-key: tu-clave" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": {
+      "Categoria": "Computadores",
+      "DescripcionProductoComprador": "NOTEBOOK 512GB SSD 8GB RAM PROCESADOR AMD RYZEN 7",
+      "DescripcionProductoProveedor": "NOTEBOOK HP PAVILION 15-EH1005LA",
+      "productoname": "Notebook, laptop o computador portátil excepto Tablet PC"
+    },
+    "codigo_cotizacion": "1058094-1307-COT23",
+    "rut_proveedor": "76.274.027-3",
+    "use_diccionarios": false,
+    "campos_manuales": ["Procesador", "RAM (GB)", "Pantalla (Pulgadas)"]
+  }'
+```
+
+---
+
+### `POST /catalogar/licitacion` — Licitación
+
+Cataloga un producto de una **licitación pública**. Los anexos técnicos y económicos se descargan desde la API pública de Mercado Público (no requiere token).
+
+**Request body:**
+
+```json
+{
+  "payload": {
+    "Categoria": "Computadores",
+    "DescripcionProductoComprador": "SERVICIO DE ARRIENDO DE COMPUTADORES DESDE 4179-44-LR22ARRIENDO 30 COMPUTADORES ,CUOTA 29 DE 36",
+    "DescripcionProductoProveedor": "SERVICIO DE ARRIENDO DE COMPUTADORES DESDE 4179-44-LR22ARRIENDO 30 COMPUTADORES CUOTA 29 DE 36FACTURA DEBE INDICAR EL NUMERO DE ORDEN DE COMPRA PARA SER ACEPTADA.",
+    "productoname": "Computadores de escritorio"
+  },
+  "codigo_licitacion": "4179-44-LR22",
+  "rut_proveedor": "96.523.180-3",
+  "use_diccionarios": true,
+  "llm_provider": "openai",
   "campos_manuales": [
     "Pantalla (Pulgadas)",
     "Procesador",
@@ -154,46 +154,70 @@ Content-Type: application/json
 }
 ```
 
-#### Parámetros
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `payload` | objeto | — | Datos del producto |
+| `codigo_licitacion` | string | — | Código de la licitación (ej: `1234-567-LE24`) |
+| `rut_proveedor` | string | — | RUT del proveedor |
+| `use_diccionarios` | bool | `true` | Normalizar con diccionarios |
+| `llm_provider` | string\|null | `null` | Proveedor LLM. `null` usa `DEFAULT_LLM_PROVIDER` del `.env` |
+| `campos_manuales` | lista\|null | `null` | Campos adicionales a extraer |
 
-- **payload** (required): Información del producto
-  - `Categoria`: Categoría del producto (actualmente solo "Computadores")
-  - `DescripcionProductoComprador`: Descripción del comprador
-  - `DescripcionProductoProveedor`: Descripción del proveedor
-  - `productoname`: Nombre específico del producto
+**Ejemplo:**
 
-- **codigo_cotizacion** (required): Código de la solicitud de cotización
-- **rut_proveedor** (required): RUT del proveedor
-- **use_diccionarios** (optional, default: true): Si usar normalización con diccionarios
-- **llm_provider** (optional): Proveedor LLM específico ('openai', 'gemini', 'deepseek')
-- **campos_manuales** (optional): Lista de campos adicionales a extraer en paralelo
+```bash
+curl -X POST http://localhost:8000/catalogar/licitacion \
+  -H "x-api-key: tu-clave" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": {
+      "Categoria": "Computadores",
+      "DescripcionProductoComprador": "COMPUTADOR TODO EN UNO 24 PULGADAS",
+      "DescripcionProductoProveedor": "AIO LENOVO IDEACENTRE 3",
+      "productoname": "Computadores de escritorio"
+    },
+    "codigo_licitacion": "1234-567-LE24",
+    "rut_proveedor": "76.123.456-7",
+    "use_diccionarios": true,
+    "campos_manuales": ["Procesador", "RAM (GB)", "Pantalla (Pulgadas)"]
+  }'
+```
 
-#### Response
+---
+
+## Diferencias entre endpoints
+
+| | `/catalogar` (Compra Ágil) | `/catalogar/licitacion` |
+|---|---|---|
+| Tipo de proceso | Solicitud de cotización | Licitación pública |
+| Código requerido | `codigo_cotizacion` | `codigo_licitacion` |
+| Autenticación Mercado Público | Opcional (`token_bearer`) | No requerida |
+| `use_diccionarios` default | `false` | `true` |
+| Adjuntos | Archivos del proveedor (ofertas) | Anexos técnicos y económicos |
+
+---
+
+## Response
+
+Ambos endpoints devuelven la misma estructura:
 
 ```json
 {
   "success": true,
   "resultado": {
+    "ROWNUM": "1",
     "Tipo": "Laptop",
-    "Part Number": "15-eh3027la",
-    "Modelo": "HP 255 G9",
-    "campos_manuales": {
-      "Pantalla (Pulgadas)": "13.3",
-      "Procesador": "AMD Ryzen 7 7735U",
-      "Marca": "HP",
-      "Tipo RAM": "DDR5",
-      "RAM (GB)": "16 GB",
-      "Tipo Almacenamiento": "SSD M.2",
-      "Almacenamiento (GB)": "1000 GB",
-      "Hilos": "16",
-      "Nucleos": "8"
-    }
+    "Part Number": "15-EH1005LA",
+    "Modelo": "HP Pavilion 15-EH1005LA",
+    "Pantalla (Pulgadas)": "15.6",
+    "Procesador": "AMD Ryzen 7 5700U",
+    "RAM (GB)": "8 GB"
   },
   "errores": [],
   "warnings": [],
   "metadata": {
-    "codigo_cotizacion": "377-164-COT24",
-    "rut_proveedor": "76292976-7",
+    "codigo_cotizacion": "1058094-1307-COT23",
+    "rut_proveedor": "76.274.027-3",
     "categoria": "Computadores",
     "adjuntos_descargados": true,
     "adjuntos_procesados": true,
@@ -203,148 +227,56 @@ Content-Type: application/json
 }
 ```
 
-### Ejemplo con cURL
+Los atributos fijos siempre presentes en `resultado` son:
 
-```bash
-curl -X POST "http://localhost:8000/catalogar" \
-  -H "X-API-Key: 1234" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "payload": {
-      "Categoria": "Computadores",
-      "DescripcionProductoComprador": "NOTEBOOK RYZEN 7, 16GB DE RAM",
-      "DescripcionProductoProveedor": "NOTEBOOK HP PAVILION",
-      "productoname": "Notebook, laptop o computador portátil excepto Tablet PC"
-    },
-    "codigo_cotizacion": "377-164-COT24",
-    "rut_proveedor": "76292976-7",
-    "campos_manuales": ["Procesador", "RAM (GB)", "Pantalla (Pulgadas)"]
-  }'
-```
+| Atributo | Valores posibles |
+|---|---|
+| `Tipo` | `"Laptop"`, `"Desktop"`, `"AIO"`, `"Otro"` |
+| `Part Number` | Código del fabricante o `"No disponible"` |
+| `Modelo` | Nombre completo del modelo o `"No disponible"` |
 
-### Ejemplo con Python
+Los campos en `campos_manuales` se agregan directamente en `resultado` junto a los anteriores.
 
-```python
-import requests
+---
 
-url = "http://localhost:8000/catalogar"
-headers = {
-    "X-API-Key": "1234",
-    "Content-Type": "application/json"
-}
-data = {
-    "payload": {
-        "Categoria": "Computadores",
-        "DescripcionProductoComprador": "NOTEBOOK RYZEN 7, 16GB DE RAM",
-        "DescripcionProductoProveedor": "NOTEBOOK HP PAVILION",
-        "productoname": "Notebook, laptop o computador portátil excepto Tablet PC"
-    },
-    "codigo_cotizacion": "377-164-COT24",
-    "rut_proveedor": "76292976-7",
-    "campos_manuales": ["Procesador", "RAM (GB)", "Pantalla (Pulgadas)"]
-}
+## Campos manuales
 
-response = requests.post(url, json=data, headers=headers)
-print(response.json())
-```
-
-## Campos Manuales - Sistema Genérico
-
-El sistema soporta **cualquier campo personalizado** que el usuario defina. Las reglas de extracción y limpieza se aplican automáticamente según patrones detectados en el nombre del campo:
-
-### Patrones Soportados
-
-| Patrón del Campo | Comportamiento | Ejemplos |
-|-----------------|----------------|----------|
-| `Campo (GB)`, `Campo (TB)` | Extrae número + unidad | "RAM (GB)" → "16 GB" |
-| `Campo (Pulgadas)`, `Campo (Inches)` | Solo número | "Pantalla (Pulgadas)" → "13.3" |
-| `Tipo Campo` | Solo tipo, elimina capacidades | "Tipo RAM" → "DDR5" |
-| `Nucleos`, `Hilos`, `Cores` | Solo número | "Nucleos" → "8" |
-| `Marca`, `Modelo` | Limpia capacidades numéricas | "Marca" → "HP" |
-| `Procesador`, `CPU` | Modelo completo | "Procesador" → "AMD Ryzen 7 7735U" |
-| `Campo (MHz)`, `Campo (GHz)` | Número + unidad | "Frecuencia (GHz)" → "3.5 GHz" |
-
-### Ejemplos de Campos Personalizados
+El sistema acepta **cualquier campo personalizado** definido en `campos_manuales`. Algunos ejemplos:
 
 ```json
-{
-  "campos_manuales": [
-    "Pantalla (Pulgadas)",      // → "13.3"
-    "Procesador",               // → "AMD Ryzen 7 7735U"
-    "Marca",                    // → "HP"
-    "Tipo RAM",                 // → "DDR5"
-    "RAM (GB)",                 // → "16 GB"
-    "Almacenamiento (GB)",      // → "1000 GB"
-    "Frecuencia (GHz)",         // → "3.5 GHz"
-    "Puertos USB",              // → "4"
-    "Garantía (Años)",          // → "3 Años"
-    "Color",                    // → "Negro"
-    "Tipo Conexión"             // → "Wi-Fi 6"
-  ]
-}
+"campos_manuales": [
+  "Pantalla (Pulgadas)",
+  "Procesador",
+  "Marca",
+  "Tipo RAM",
+  "RAM (GB)",
+  "Almacenamiento (GB)",
+  "Nucleos",
+  "Hilos",
+  "Color"
+]
 ```
 
-## Configuración Avanzada
+---
 
-### Variables de Entorno - Campos Manuales
+## Configuración del `.env`
 
-```bash
-# Extracción Paralela - Configuración de Concurrencia
-CAMPOS_MANUALES_MAX_WORKERS=3        # Máximo de agentes en paralelo
-CAMPOS_MANUALES_MAX_RETRIES=3        # Reintentos por campo
-CAMPOS_MANUALES_INITIAL_DELAY=2.0    # Delay inicial entre reintentos (segundos)
+Ver `.env.example` para la lista completa de variables. Las más relevantes:
+
+```env
+# Proveedor LLM por defecto
+DEFAULT_LLM_PROVIDER=openai          # openai | gemini | deepseek
+
+# Claves API — cambiar según el proveedor usado
+OPENAI_API_KEY=sk-...                # Siempre requerida (embeddings)
+GOOGLE_API_KEY=AIza...               # Solo si DEFAULT_LLM_PROVIDER=gemini
+DEEPSEEK_API_KEY=...                 # Solo si DEFAULT_LLM_PROVIDER=deepseek
+
+# Modelos LLM (opcionales, tienen valores por defecto razonables)
+OPENAI_MODEL=gpt-4o-mini
+GEMINI_MODEL=gemini-2.5-flash
+DEEPSEEK_MODEL=deepseek-chat
+
+# Seguridad de esta API
+API_KEY=cambia-esto
 ```
-
-### Variables de Entorno - Vector Store
-
-```bash
-# FAISS Configuration
-VECTORSTORE_PERSIST_DIR=./faiss_db
-VECTORSTORE_COLLECTION_NAME=catalogacion_default
-EMBEDDING_MODEL=models/text-embedding-004
-```
-
-### Variables de Entorno - Retrieval
-
-```bash
-# Configuración de búsqueda semántica
-SEARCH_K_ADJUNTOS=5          # Documentos a recuperar de adjuntos
-SEARCH_K_DICCIONARIOS=2      # Documentos a recuperar de diccionarios
-
-# Temperaturas de LLM
-TEMPERATURE_ADJUNTOS=0.7     # Creatividad en extracción de adjuntos
-TEMPERATURE_DICCIONARIOS=0.3 # Precisión en normalización
-```
-
-## Estructura del Proyecto
-
-```
-AIChileCompra/
-├── agents/                      # Agentes y workflows
-│   ├── catalogacion_comp.py     # Agente de catalogación base
-│   ├── grafo_comp.py            # Definición del grafo LangGraph
-│   ├── nodos_comp.py            # Nodos del workflow
-│   ├── state_comp.py            # Estado compartido
-│   ├── get_agent.py             # Factory de LLMs
-│   └── get_vectorstore.py       # Factory de FAISS
-├── utils/                       # Utilidades
-│   ├── get_attachments.py       # Descarga de adjuntos
-│   └── process_attachments.py   # Procesamiento de archivos
-├── main.py                      # API FastAPI
-├── extraer_atributos.py         # Función principal de extracción
-├── requirements.txt             # Dependencias
-├── .env.example                 # Plantilla de configuración
-└── README.md                    # Este archivo
-```
-
-## Manejo de Errores
-
-### Rate Limiting
-
-El sistema incluye **retry automático con backoff exponencial** para manejar límites de API:
-
-- Máximo 3 reintentos por campo (configurable)
-- Delay inicial de 2 segundos, duplicándose en cada reintento
-- Detección inteligente del tiempo de espera desde mensajes de error
-- Staggered submission de 500ms entre campos
-

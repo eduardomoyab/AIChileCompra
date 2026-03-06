@@ -4,11 +4,13 @@ import logging
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from langchain_core.documents import Document
+import pandas as pd
+from docx import Document as DocxDocument
 
 # Añadir el directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.get_vectorstore import VectorStoreManager
+from agents.get_vectorstore import create_faiss_from_texts
 
 # Cargar variables de entorno
 load_dotenv()
@@ -20,15 +22,112 @@ logging.basicConfig(
 )
 
 # Constantes
-CACHE_PATH = "cache/Computadores"
-COLLECTION_NAME = "diccionario_computadores"
+DICCIONARIOS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diccionarios", "Computadores")
+FEATURES_PATH = os.path.join(DICCIONARIOS_PATH, "diccionario_features.docx")
+PROCESADOR_PATH = os.path.join(DICCIONARIOS_PATH, "diccionario_procesador.xlsx")
+
+# Cache global para vector stores (se cargan una vez por sesión)
+_vectorstore_cache = {}
+
+
+def _load_features_dict() -> tuple[List[str], List[Dict]]:
+    """Carga el diccionario de features desde .docx"""
+    if not os.path.exists(FEATURES_PATH):
+        logging.warning(f"No se encontró {FEATURES_PATH}")
+        return [], []
+
+    doc = DocxDocument(FEATURES_PATH)
+    texts = []
+    metadatas = []
+
+    for i, para in enumerate(doc.paragraphs):
+        if para.text.strip():
+            texts.append(para.text.strip())
+            metadatas.append({
+                'origen': 'Features',
+                'archivo': 'diccionario_features.docx',
+                'parrafo_num': i
+            })
+
+    logging.info(f"Cargado diccionario Features: {len(texts)} párrafos")
+    return texts, metadatas
+
+
+def _load_procesador_dict() -> tuple[List[str], List[Dict]]:
+    """Carga el diccionario de procesadores desde .xlsx"""
+    if not os.path.exists(PROCESADOR_PATH):
+        logging.warning(f"No se encontró {PROCESADOR_PATH}")
+        return [], []
+
+    df = pd.read_excel(PROCESADOR_PATH)
+    texts = []
+    metadatas = []
+
+    # Convertir cada fila a texto
+    for idx, row in df.iterrows():
+        procesador = row.get('Procesador', '')
+        nucleos = row.get('Nucleos', '')
+        hilos = row.get('Hilos', '')
+
+        if procesador:
+            text = f"Procesador: {procesador}, Núcleos: {nucleos}, Hilos: {hilos}"
+            texts.append(text)
+            metadatas.append({
+                'origen': 'Procesador',
+                'archivo': 'diccionario_procesador.xlsx',
+                'row_number': int(idx),
+                'procesador': procesador,
+                'nucleos': int(nucleos) if pd.notna(nucleos) else None,
+                'hilos': int(hilos) if pd.notna(hilos) else None
+            })
+
+    logging.info(f"Cargado diccionario Procesador: {len(texts)} procesadores")
+    return texts, metadatas
+
+
+def _get_or_create_vectorstore(origen: str = 'all'):
+    """
+    Obtiene o crea el vector store FAISS para el diccionario especificado.
+    Usa cache para evitar recargar en cada consulta.
+
+    Args:
+        origen: 'Features', 'Procesador', o 'all' para ambos
+    """
+    if origen in _vectorstore_cache:
+        return _vectorstore_cache[origen]
+
+    texts_all = []
+    metadatas_all = []
+
+    # Cargar Features si se necesita
+    if origen in ['Features', 'all']:
+        texts_feat, meta_feat = _load_features_dict()
+        texts_all.extend(texts_feat)
+        metadatas_all.extend(meta_feat)
+
+    # Cargar Procesador si se necesita
+    if origen in ['Procesador', 'all']:
+        texts_proc, meta_proc = _load_procesador_dict()
+        texts_all.extend(texts_proc)
+        metadatas_all.extend(meta_proc)
+
+    if not texts_all:
+        raise ValueError(f"No se pudieron cargar diccionarios para origen: {origen}")
+
+    # Crear FAISS vector store en memoria
+    vectorstore = create_faiss_from_texts(texts_all, metadatas_all)
+
+    # Guardar en cache
+    _vectorstore_cache[origen] = vectorstore
+    logging.info(f"Vector store FAISS creado y cacheado para origen: {origen} ({len(texts_all)} documentos)")
+
+    return vectorstore
 
 
 def search_diccionario_balanced(
     query: str,
     k_total: int = 2,
-    collection_name: str = COLLECTION_NAME,
-    cache_path: str = CACHE_PATH
+    **kwargs  # Mantener compatibilidad con llamadas antiguas
 ) -> List[Document]:
     """
     Busca en el diccionario de computadores asegurando que se obtenga exactamente
@@ -37,11 +136,11 @@ def search_diccionario_balanced(
     Esta función garantiza diversidad en los resultados al forzar que haya
     representación de ambos orígenes de manera obligatoria.
 
+    MIGRADO A FAISS - ya no usa Chroma.
+
     Args:
         query (str): Consulta de búsqueda
         k_total (int): Número total de resultados (debe ser 2 para k=1 de cada origen)
-        collection_name (str): Nombre de la colección
-        cache_path (str): Ruta al cache
 
     Returns:
         List[Document]: Lista con exactamente k_total documentos,
@@ -60,20 +159,22 @@ def search_diccionario_balanced(
 
     k_per_origin = k_total // 2
 
-    # Cargar vector store
-    manager = VectorStoreManager(
-        collection_name=collection_name,
-        persist_directory=cache_path
-    )
+    # Cargar vector stores FAISS (uno para cada origen)
+    vs_features = _get_or_create_vectorstore('Features')
+    vs_procesador = _get_or_create_vectorstore('Procesador')
 
-    # Buscar en cada origen por separado
-    results_features = manager.similarity_search(
+    # Buscar en cada origen por separado usando FAISS
+    from agents.get_vectorstore import search_in_faiss
+
+    results_features = search_in_faiss(
+        vs_features,
         query,
         k=k_per_origin,
         filter={"origen": "Features"}
     )
 
-    results_procesador = manager.similarity_search(
+    results_procesador = search_in_faiss(
+        vs_procesador,
         query,
         k=k_per_origin,
         filter={"origen": "Procesador"}
@@ -94,7 +195,7 @@ def search_diccionario_balanced(
             combined_results.append(results_procesador[i])
 
     logging.info(
-        f"Búsqueda balanceada: {len(results_features)} Features + "
+        f"Búsqueda balanceada FAISS: {len(results_features)} Features + "
         f"{len(results_procesador)} Procesador = {len(combined_results)} total"
     )
 
@@ -105,18 +206,17 @@ def search_diccionario_with_filter(
     query: str,
     origen: str,
     k: int = 2,
-    collection_name: str = COLLECTION_NAME,
-    cache_path: str = CACHE_PATH
+    **kwargs  # Mantener compatibilidad
 ) -> List[Document]:
     """
     Busca en el diccionario filtrando por un origen específico.
+
+    MIGRADO A FAISS - ya no usa Chroma.
 
     Args:
         query (str): Consulta de búsqueda
         origen (str): Origen a filtrar ('Features' o 'Procesador')
         k (int): Número de resultados
-        collection_name (str): Nombre de la colección
-        cache_path (str): Ruta al cache
 
     Returns:
         List[Document]: Documentos filtrados por origen
@@ -128,67 +228,41 @@ def search_diccionario_with_filter(
     if origen not in ['Features', 'Procesador']:
         raise ValueError("origen debe ser 'Features' o 'Procesador'")
 
-    # Cargar vector store
-    manager = VectorStoreManager(
-        collection_name=collection_name,
-        persist_directory=cache_path
-    )
+    # Cargar vector store FAISS para ese origen específico
+    vectorstore = _get_or_create_vectorstore(origen)
 
-    # Buscar con filtro
-    results = manager.similarity_search(
+    # Buscar con filtro usando FAISS
+    from agents.get_vectorstore import search_in_faiss
+
+    results = search_in_faiss(
+        vectorstore,
         query,
         k=k,
         filter={"origen": origen}
     )
 
-    logging.info(f"Búsqueda en '{origen}': {len(results)} documentos encontrados")
+    logging.info(f"Búsqueda FAISS en '{origen}': {len(results)} documentos encontrados")
     return results
 
 
 def create_retriever_diccionario(
     origen: Optional[str] = None,
     k: int = 2,
-    search_type: str = "similarity",
-    collection_name: str = COLLECTION_NAME,
-    cache_path: str = CACHE_PATH
+    **kwargs  # Mantener compatibilidad
 ):
     """
-    Crea un retriever para el diccionario de computadores.
+    DEPRECATED: Esta función ya no es necesaria con FAISS.
+    Usa search_diccionario_balanced() o search_diccionario_with_filter() directamente.
 
-    Args:
-        origen (str, optional): Filtrar por origen ('Features' o 'Procesador').
-                               Si es None, busca en ambos.
-        k (int): Número de documentos a retornar
-        search_type (str): Tipo de búsqueda ('similarity' o 'mmr')
-        collection_name (str): Nombre de la colección
-        cache_path (str): Ruta al cache
-
-    Returns:
-        VectorStoreRetriever: Retriever configurado
-
-    Example:
-        >>> # Retriever solo para Features
-        >>> retriever = create_retriever_diccionario(origen="Features", k=3)
-        >>> results = retriever.get_relevant_documents("pantalla LED")
+    Se mantiene solo para compatibilidad con código antiguo.
     """
-    # Cargar vector store
-    manager = VectorStoreManager(
-        collection_name=collection_name,
-        persist_directory=cache_path
+    logging.warning(
+        "create_retriever_diccionario() está deprecado. "
+        "Usa search_diccionario_balanced() o search_diccionario_with_filter() directamente."
     )
 
-    # Crear filtro si se especifica origen
-    filter_dict = {"origen": origen} if origen else None
-
-    # Obtener retriever
-    retriever = manager.get_retriever(
-        search_type=search_type,
-        k=k,
-        filter=filter_dict
-    )
-
-    logging.info(f"Retriever de diccionario creado (origen: {origen or 'todos'})")
-    return retriever
+    # Retornar None - el código que lo use debe actualizarse
+    return None
 
 
 def format_docs_for_llm(docs: List[Document]) -> str:

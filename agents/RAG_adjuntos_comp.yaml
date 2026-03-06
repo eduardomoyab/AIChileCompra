@@ -25,12 +25,12 @@ rag_template: |
 
   - **ROWNUM**: Mantén el valor del ROWNUM del objeto de entrada.
 
-  - **Tipo**: Debes indicar el tipo de producto entre las siguientes opciones exactas:
-    * "AIO" (All in One)
-    * "Laptop" (también conocido como Notebook)
-    * "Desktop" (computador de escritorio)
-    * "Otro" (si no corresponde a ninguna de las 3 categorías anteriores)
-    Solo selecciona UNO de estos valores. En caso que no puedas reconocer nada, déjalo como "No disponible".
+  - **Tipo**: Clasifica el producto en una de estas categorías:
+    * "AIO" — computador All-in-One: monitor y CPU integrados en una sola unidad
+    * "Laptop" — computador portátil/notebook
+    * "Desktop" — computador de escritorio con torre separada del monitor
+    * "Otro" — solo si el producto claramente NO es ninguno de los anteriores (ej: impresora, tablet, servidor)
+    Usa toda la información disponible: contenido de adjuntos, nombres de archivos ("Nombre Original"), y descripciones del producto. Si el producto es un computador pero la evidencia no permite distinguir entre AIO/Laptop/Desktop, elige "Desktop" antes que "Otro".
 
   - **Part Number**: Debes extraer el número de parte (Part Number, P/N, SKU, Código de Producto) del equipo. Apóyate en la información relevante de los adjuntos. El Part Number suele ser un código alfanumérico único que identifica el producto del fabricante (ejemplo: "15-EH1005LA", "82KT00GMUS", "M1-23A4E5"). Si no se puede identificar, indica "No disponible".
 
@@ -39,9 +39,9 @@ rag_template: |
   **IMPORTANTE:**
   - Omite símbolos como ®, ™, etc. en las respuestas.
   - Es posible que en los adjuntos vengan especificaciones de varios productos. Apóyate principalmente en la DescripcionProductoProveedor para identificar el producto de interés. Si este campo viene nulo o vacío, entonces utiliza el campo DescripcionProductoComprador.
-  - Usa estos campos (descripciones) solamente para determinar a cuál producto hace referencia la compra, NO lo utilices para determinar los atributos del producto. Para los atributos, confía ÚNICAMENTE en la "Información Relevante" de los adjuntos (fichas técnicas, especificaciones, etc.).
+  - Usa las descripciones (DescripcionProductoComprador, DescripcionProductoProveedor) principalmente para identificar a cuál producto hace referencia la compra. Para **Part Number** y **Modelo**, confía ÚNICAMENTE en la Información Relevante de los adjuntos. Para **Tipo**, las descripciones pueden usarse como fuente secundaria si los adjuntos son ambiguos (ver instrucción de Tipo arriba).
   - Si hay un valor de campo que no se puede identificar, entonces se debe completar con "No disponible". Intenta completar los datos de acuerdo a la información relevante.
-  - Prioriza el contenido de Información relevante por sobre las descripciones del comprador y proveedor de la Pregunta.
+  - Prioriza el contenido de Información relevante por sobre las descripciones para Part Number y Modelo.
   - El Part Number NO es el número de serie ni el Asset Tag, es el código del modelo del fabricante.
 
   **EJEMPLO:**

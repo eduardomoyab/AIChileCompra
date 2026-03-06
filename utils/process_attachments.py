@@ -5,7 +5,6 @@ import gc
 from tqdm import tqdm
 from PyPDF2 import PdfReader
 import easyocr
-import subprocess
 from docx import Document
 from openpyxl import load_workbook
 from bs4 import BeautifulSoup
@@ -93,38 +92,53 @@ class AttachmentProcessor:
         return any(word.lower() in text.lower() for word in self.blacklist)
 
     def _extract_text_from_pdf(self, pdf_path: str, ocr_ok: bool = False) -> Optional[str]:
-        """Extrae texto de un archivo PDF"""
+        """
+        Extrae texto de un PDF procesando página por página.
+        - Páginas con texto nativo suficiente → extracción directa con PyPDF2.
+        - Páginas con poco/ningún texto      → OCR con PyMuPDF + EasyOCR (si ocr_ok=True).
+        """
         try:
             reader = PdfReader(pdf_path)
-            text = ''.join(page.extract_text() for page in reader.pages if page.extract_text())
-            text_por_pagina = [page.extract_text() for page in reader.pages if page.extract_text()]
+            pages_text = []      # texto final por página
+            pages_to_ocr = []    # índices de páginas que necesitan OCR
 
-            # Si el texto es muy corto, usar OCR
-            if (len(text) < TEXT_THRESHOLD or
-                any(len(page.split()) < TEXT_THRESHOLD/10 for page in text_por_pagina)) and ocr_ok:
-                return self._extract_text_from_pdf_with_ocr(pdf_path)
-            return text
+            # Paso 1: extracción nativa página por página
+            for i, page in enumerate(reader.pages):
+                if i >= MAX_PAGES:
+                    break
+                native = page.extract_text() or ''
+                pages_text.append(native)
+                if ocr_ok and (len(native) < TEXT_THRESHOLD or
+                               len(native.split()) < TEXT_THRESHOLD // 10):
+                    pages_to_ocr.append(i)
+
+            # Paso 2: OCR solo en páginas que lo necesitan
+            if pages_to_ocr:
+                import fitz
+                import numpy as np
+
+                logging.info(f"  OCR necesario en {len(pages_to_ocr)}/{len(pages_text)} páginas: {pages_to_ocr}")
+                doc = fitz.open(pdf_path)
+                mat = fitz.Matrix(2, 2)
+
+                for idx in pages_to_ocr:
+                    if idx >= len(doc):
+                        continue
+                    pix = doc[idx].get_pixmap(matrix=mat)
+                    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+                    if pix.n == 4:
+                        img = img[:, :, :3]
+                    result = self.reader.readtext(img, detail=0)
+                    if result:
+                        pages_text[idx] = '\n'.join(result)
+
+                doc.close()
+
+            combined = '\n\n'.join(t for t in pages_text if t.strip())
+            return combined if combined.strip() else None
+
         except Exception as e:
             logging.error(f"Error reading PDF {pdf_path}: {e}")
-            return None
-
-    def _extract_text_from_pdf_with_ocr(self, pdf_path: str) -> Optional[str]:
-        """Extrae texto de PDF usando OCR"""
-        try:
-            temp_pdf_path = pdf_path.replace('.pdf', '_ocr.pdf')
-            command = ['ocrmypdf', '--force-ocr', '--output-type', 'pdf', pdf_path, temp_pdf_path]
-
-            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
-                proc.wait()
-
-            text = self._extract_text_from_pdf(temp_pdf_path, ocr_ok=True)
-
-            if os.path.exists(temp_pdf_path):
-                os.remove(temp_pdf_path)
-
-            return text
-        except Exception as e:
-            logging.error(f"Error processing PDF with OCR {pdf_path}: {e}")
             return None
 
     def _extract_text_with_ocr(self, image_path: str) -> Optional[str]:
@@ -195,7 +209,7 @@ class AttachmentProcessor:
         ext = file_path.lower()
 
         if ext.endswith('.pdf'):
-            return self._extract_text_from_pdf(file_path)
+            return self._extract_text_from_pdf(file_path, ocr_ok=True)
         elif ext.endswith(('.jpg', '.jpeg', '.png')):
             return self._extract_text_with_ocr(file_path)
         elif ext.endswith('.docx'):
