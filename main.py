@@ -316,7 +316,8 @@ async def catalogar_producto(request: CatalogarRequest,
                 "adjuntos_descargados": resultado_completo.get('adjuntos_descargados', False),
                 "adjuntos_procesados": resultado_completo.get('adjuntos_procesados', False),
                 "use_diccionarios": request.use_diccionarios,
-                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini")
+                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+                "tiempos": resultado_completo.get('tiempos', []),
             }
         )
 

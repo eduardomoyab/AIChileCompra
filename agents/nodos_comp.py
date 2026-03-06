@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Añadir el directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.state_comp import CatalogacionState, add_error, add_warning
+from agents.state_comp import CatalogacionState, add_error, add_warning, add_tiempo
 from agents.catalogacion_comp import CatalogacionComputadores
 from agents.get_agent import get_llm
 from agents.get_vectorstore import create_faiss_from_files
@@ -52,28 +52,38 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         - errores: Lista de errores si hubo fallas
     """
     logging.info(f"[NODO 1/5] Descargando adjuntos para {state['codigo_cotizacion']}")
+    _NODO = "nodo_1_descargar_adjuntos"
+    t_nodo = time.time()
 
     try:
-        # Verificar si ya existen archivos descargados
+        # Sub-fase 1a: verificar caché
+        t0 = time.time()
         attachments_dir = os.path.join(
             os.getenv('ATTACHMENTS_OUTPUT_PATH', 'attachments'),
             state['codigo_cotizacion'],
             state['rut_proveedor']
         )
-
+        cache_hit = False
         if os.path.exists(attachments_dir):
-            # Contar archivos existentes (excluyendo directorios)
             existing_files = [f for f in os.listdir(attachments_dir)
                             if os.path.isfile(os.path.join(attachments_dir, f))]
-
             if len(existing_files) > 0:
-                logging.info(f"✓ Archivos ya descargados: {len(existing_files)} archivos encontrados")
-                state['adjuntos_descargados'] = True
-                state['adjuntos_path'] = attachments_dir
-                return state
+                cache_hit = True
+        state = add_tiempo(state, _NODO, "check_cache",
+                           f"Verificar caché local de adjuntos (hit={cache_hit})",
+                           time.time() - t0)
 
-        # Si no existen, proceder con la descarga
-        # Usar downloader global si está disponible en el state
+        if cache_hit:
+            logging.info(f"✓ Archivos ya descargados: {len(existing_files)} archivos encontrados")
+            state['adjuntos_descargados'] = True
+            state['adjuntos_path'] = attachments_dir
+            state = add_tiempo(state, _NODO, "total",
+                               "Total nodo descargar_adjuntos (caché)",
+                               time.time() - t_nodo)
+            return state
+
+        # Sub-fase 1b: descarga real
+        t0 = time.time()
         downloader = state.get('downloader', None)
         resultado = download_attachments_simple(
             codigo_cotizacion=state['codigo_cotizacion'],
@@ -81,6 +91,10 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             headless=True,
             downloader=downloader
         )
+        state = add_tiempo(state, _NODO, "download_api",
+                           f"Descarga desde Mercado Público (success={resultado.get('success')},"
+                           f" archivos={resultado.get('total_files', 0)})",
+                           time.time() - t0)
 
         if resultado['success']:
             state['adjuntos_descargados'] = True
@@ -98,6 +112,9 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         state = add_error(state, error_msg)
         logging.exception(error_msg)
 
+    state = add_tiempo(state, _NODO, "total",
+                       "Total nodo descargar_adjuntos",
+                       time.time() - t_nodo)
     return state
 
 
@@ -121,6 +138,8 @@ def procesar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         - errores: Lista de errores si hubo fallas
     """
     logging.info(f"[NODO 2/5] Procesando adjuntos de {state['codigo_cotizacion']}")
+    _NODO = "nodo_2_procesar_adjuntos"
+    t_nodo = time.time()
 
     # Verificar que se hayan descargado los adjuntos
     if not state.get('adjuntos_descargados'):
@@ -130,18 +149,23 @@ def procesar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         return state
 
     try:
+        # Sub-fase 2a: extracción de texto de PDFs/imágenes
+        t0 = time.time()
         resultado = process_attachments_simple(
             attachments_path=state['adjuntos_path'],
-            output_path=None,  # Usa ruta por defecto
+            output_path=None,
             blacklist=None,
             use_gpu=False
         )
+        state = add_tiempo(state, _NODO, "process_attachments",
+                           f"Extracción de texto (procesados={resultado.get('processed_files', 0)},"
+                           f" omitidos={resultado.get('skipped_files', 0)},"
+                           f" success={resultado.get('success')})",
+                           time.time() - t0)
 
         if resultado['success']:
             state['adjuntos_procesados'] = True
             state['processed_path'] = resultado['output_path']
-
-            # Log según si se procesaron archivos nuevos o ya existían
             if resultado['processed_files'] > 0:
                 logging.info(
                     f"✓ Adjuntos procesados: {resultado['processed_files']} archivos, "
@@ -149,11 +173,9 @@ def procesar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
                 )
             else:
                 logging.info("✓ Archivos ya procesados previamente")
-
             if resultado['skipped_files'] > 0:
                 warning_msg = f"{resultado['skipped_files']} archivos fueron omitidos durante el procesamiento"
                 state = add_warning(state, warning_msg)
-
         else:
             state['adjuntos_procesados'] = False
             error_msg = f"Error procesando adjuntos: {resultado.get('error', 'Unknown error')}"
@@ -166,6 +188,9 @@ def procesar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         state = add_error(state, error_msg)
         logging.exception(error_msg)
 
+    state = add_tiempo(state, _NODO, "total",
+                       "Total nodo procesar_adjuntos",
+                       time.time() - t_nodo)
     return state
 
 
@@ -220,26 +245,39 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         - errores: Lista de errores si hubo fallas
     """
     logging.info(f"[NODO 4/5] Ejecutando RAG con adjuntos (ROWNUM: {state['payload'].get('ROWNUM')})")
+    _NODO = "nodo_3_rag_adjuntos"
+    t_nodo = time.time()
 
     try:
+        # Sub-fase 3a: instanciar catalogador (carga configs y diccionario Excel)
+        t0 = time.time()
         catalogador = CatalogacionComputadores(llm_provider=state.get('llm_provider'))
+        state = add_tiempo(state, _NODO, "init_catalogador",
+                           "Instanciar CatalogacionComputadores (cargar YAML + Excel)",
+                           time.time() - t0)
 
-        # Solo ejecutar paso 1 (RAG con adjuntos, sin diccionarios)
-        # Lo hacemos internamente llamando directamente al método
+        # Sub-fase 3b: inicializar LLMs
+        t0 = time.time()
         catalogador._initialize_llms()
+        state = add_tiempo(state, _NODO, "init_llm",
+                           f"Inicializar LLM ({catalogador.llm_provider})",
+                           time.time() - t0)
 
-        # Aquí podríamos llamar a un método específico para solo RAG adjuntos
-        # Por ahora usamos el método completo pero guardamos el resultado intermedio
+        # Sub-fases 3c..3f: dentro de catalogar_producto
+        tiempos_locales = state.get('tiempos', [])
         resultado = catalogador.catalogar_producto(
             payload=state['payload'],
             codigo_cotizacion=state['codigo_cotizacion'],
             rut_proveedor=state['rut_proveedor'],
             processed_path=state['processed_path'],
-            use_diccionarios=False  # Solo adjuntos, sin diccionarios
+            use_diccionarios=False,
+            tiempos=tiempos_locales,
+            nodo_nombre=_NODO,
         )
+        # tiempos_locales fue mutado in-place por catalogar_producto
+        state['tiempos'] = tiempos_locales
 
         state['resultado_adjuntos'] = resultado
-        # Si no se usarán diccionarios, este es el resultado final
         if not state.get('use_diccionarios', True):
             state['resultado_final'] = resultado
         logging.info(f"✓ RAG adjuntos completado para ROWNUM {state['payload'].get('ROWNUM')}")
@@ -249,6 +287,9 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         state = add_error(state, error_msg)
         logging.exception(error_msg)
 
+    state = add_tiempo(state, _NODO, "total",
+                       "Total nodo rag_adjuntos",
+                       time.time() - t_nodo)
     return state
 
 
@@ -273,15 +314,17 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
         - errores: Lista de errores si hubo fallas
     """
     logging.info(f"[NODO 5/5] Ejecutando RAG con diccionarios (ROWNUM: {state['payload'].get('ROWNUM')})")
+    _NODO = "nodo_5_rag_diccionarios"
+    t_nodo = time.time()
 
-    # Verificar si se debe usar diccionarios
     if not state.get('use_diccionarios', True):
-        # Si no se usan diccionarios, el resultado final es el de adjuntos
         state['resultado_final'] = state.get('resultado_adjuntos')
         logging.info("⊘ Diccionarios deshabilitados, usando resultado de adjuntos")
+        state = add_tiempo(state, _NODO, "total",
+                           "Total nodo rag_diccionarios (deshabilitado)",
+                           time.time() - t_nodo)
         return state
 
-    # Verificar que exista resultado de adjuntos
     if not state.get('resultado_adjuntos'):
         error_msg = "No se puede ejecutar RAG con diccionarios sin resultado de adjuntos"
         state = add_error(state, error_msg)
@@ -289,21 +332,27 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
         return state
 
     try:
+        # Sub-fase 5a: instanciar catalogador + mezcla de campos manuales
+        t0 = time.time()
         catalogador = CatalogacionComputadores(llm_provider=state.get('llm_provider'))
-
-        # Mezclar resultado_adjuntos con campos_manuales antes de aplicar diccionarios
         resultado_previo = dict(state['resultado_adjuntos'])
         if state.get('resultado_campos_manuales'):
             logging.info("Mezclando campos manuales con resultado de adjuntos...")
             for campo, valor in state['resultado_campos_manuales'].items():
                 resultado_previo[campo] = valor
             logging.info(f"  Campos mezclados: {list(state['resultado_campos_manuales'].keys())}")
+        state = add_tiempo(state, _NODO, "merge_campos_manuales",
+                           "Mezclar resultado adjuntos + campos manuales",
+                           time.time() - t0)
 
-        # Aplicar diccionarios al resultado previo (adjuntos + campos manuales)
-        # Ejecuta normalización RAG + completar núcleos/hilos desde Excel
+        # Sub-fases 5b..5d: dentro de aplicar_diccionarios
+        tiempos_locales = state.get('tiempos', [])
         resultado = catalogador.aplicar_diccionarios(
-            resultado_adjuntos=resultado_previo
+            resultado_adjuntos=resultado_previo,
+            tiempos=tiempos_locales,
+            nodo_nombre=_NODO,
         )
+        state['tiempos'] = tiempos_locales
 
         state['resultado_diccionarios'] = resultado
         state['resultado_final'] = resultado
@@ -313,12 +362,13 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
         error_msg = f"Error en RAG con diccionarios: {str(e)}"
         state = add_error(state, error_msg)
         logging.exception(error_msg)
-
-        # Si falla el RAG con diccionarios, usar resultado de adjuntos
         state['resultado_final'] = state.get('resultado_adjuntos')
         warning_msg = "Usando resultado de adjuntos debido a error en diccionarios"
         state = add_warning(state, warning_msg)
 
+    state = add_tiempo(state, _NODO, "total",
+                       "Total nodo rag_diccionarios",
+                       time.time() - t_nodo)
     return state
 
 
@@ -339,10 +389,12 @@ def consolidar_resultado_node(state: CatalogacionState) -> CatalogacionState:
         - tiempo_total: Tiempo total de procesamiento
     """
     logging.info(f"[FINAL] Consolidando resultado para ROWNUM {state['payload'].get('ROWNUM')}")
+    _NODO = "nodo_6_consolidar_resultado"
+    t_nodo = time.time()
 
-    # Verificar que haya un resultado final
+    # Sub-fase 6a: merge de campos manuales en resultado final
+    t0 = time.time()
     if not state.get('resultado_final'):
-        # Si no hay resultado_final pero hay resultado_adjuntos, usarlo
         if state.get('resultado_adjuntos'):
             logging.info("Usando resultado_adjuntos como resultado_final (tipo 'Otro' o sin diccionarios)")
             state['resultado_final'] = state['resultado_adjuntos']
@@ -351,58 +403,48 @@ def consolidar_resultado_node(state: CatalogacionState) -> CatalogacionState:
             state = add_error(state, error_msg)
             logging.error(error_msg)
 
-    # Si hay campos manuales extraídos, mezclarlos en el resultado final (nivel raíz)
     if state.get('resultado_final') and state.get('resultado_campos_manuales'):
         logging.info("Consolidando campos manuales en resultado final...")
-
-        # Copiar resultado final actual
         resultado_consolidado = dict(state['resultado_final'])
-
-        # Mezclar campos manuales en el nivel raíz (NO como sub-objeto)
-        # IMPORTANTE: NO sobrescribir valores que ya fueron actualizados por diccionarios
         for campo, valor in state['resultado_campos_manuales'].items():
             valor_actual = resultado_consolidado.get(campo)
-
-            # Solo sobrescribir si:
-            # 1. No existe el campo en resultado_consolidado, O
-            # 2. El valor actual es "No disponible" o "No especificado" PERO el nuevo valor no lo es
             if not valor_actual or \
                (valor_actual in ['No disponible', 'No especificado'] and valor not in ['No disponible', 'No especificado']):
                 resultado_consolidado[campo] = valor
-            # Si el valor actual ya fue completado (no es "No disponible/especificado"), mantenerlo
             elif valor_actual not in ['No disponible', 'No especificado']:
                 logging.debug(f"  Manteniendo valor actualizado para {campo}: {valor_actual}")
-
-        # Actualizar estado
         state['resultado_final'] = resultado_consolidado
-
         logging.info(f"✓ Campos manuales consolidados en raíz: {list(state['resultado_campos_manuales'].keys())}")
+    state = add_tiempo(state, _NODO, "merge_campos",
+                       "Merge de campos manuales en resultado final",
+                       time.time() - t0)
 
-    # Logging de resumen
     if state.get('errores'):
         logging.warning(f"⚠️  Catalogación completada con {len(state['errores'])} errores")
         for error in state['errores']:
             logging.warning(f"  - {error}")
-
     if state.get('warnings'):
         logging.info(f"ℹ️  {len(state['warnings'])} warnings generados")
 
-    # Limpiar archivos temporales (adjuntos descargados y procesados)
+    # Sub-fase 6b: limpiar archivos temporales
+    t0 = time.time()
     try:
-        # Eliminar adjuntos descargados
         if state.get('adjuntos_path') and os.path.exists(state['adjuntos_path']):
             shutil.rmtree(state['adjuntos_path'])
             logging.info(f"✓ Adjuntos descargados eliminados: {state['adjuntos_path']}")
-
-        # Eliminar adjuntos procesados
         if state.get('processed_path') and os.path.exists(state['processed_path']):
             shutil.rmtree(state['processed_path'])
             logging.info(f"✓ Adjuntos procesados eliminados: {state['processed_path']}")
     except Exception as e:
         logging.warning(f"⚠️  No se pudieron eliminar archivos temporales: {e}")
+    state = add_tiempo(state, _NODO, "limpieza_archivos",
+                       "Eliminar adjuntos descargados y procesados",
+                       time.time() - t0)
 
+    state = add_tiempo(state, _NODO, "total",
+                       "Total nodo consolidar_resultado",
+                       time.time() - t_nodo)
     logging.info(f"✓ Catalogación finalizada para ROWNUM {state['payload'].get('ROWNUM')}")
-
     return state
 
 
@@ -685,6 +727,8 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
         - errores: Lista de errores si hubo fallas
     """
     logging.info(f"[NODO 6] Extrayendo campos manuales en paralelo")
+    _NODO = "nodo_4_campos_manuales"
+    t_nodo = time.time()
 
     campos_manuales = state.get('campos_manuales_lista', [])
 
@@ -696,7 +740,6 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
     logging.info(f"Campos a extraer: {campos_manuales}")
 
     try:
-        # Obtener archivos procesados
         processed_path = state.get('processed_path')
         if not processed_path or not os.path.exists(processed_path):
             error_msg = "No se encontró el directorio de archivos procesados"
@@ -704,7 +747,6 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             logging.error(error_msg)
             return state
 
-        # Obtener archivos .txt procesados
         txt_files = [
             os.path.join(processed_path, f)
             for f in os.listdir(processed_path)
@@ -717,9 +759,9 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             logging.error(error_msg)
             return state
 
+        # Sub-fase 4a: crear FAISS para campos manuales
+        t0 = time.time()
         logging.info(f"Creando FAISS en memoria con {len(txt_files)} archivos...")
-
-        # Crear metadata para archivos
         metadatas = [
             {
                 "codigo_cotizacion": state['codigo_cotizacion'],
@@ -728,56 +770,43 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             }
             for f in txt_files
         ]
-
-        # Crear FAISS en memoria con chunks pequeños para campos manuales
         chunk_size = int(os.getenv('CAMPOS_MANUALES_CHUNK_SIZE', '200'))
         chunk_overlap = int(os.getenv('CAMPOS_MANUALES_CHUNK_OVERLAP', '50'))
-
         logging.info(f"Creando FAISS con chunks de {chunk_size} caracteres (overlap: {chunk_overlap})...")
         vectorstore = create_faiss_from_files(
-            txt_files,
-            metadatas,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
+            txt_files, metadatas,
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
         )
+        state = add_tiempo(state, _NODO, "crear_faiss",
+                           f"Crear FAISS para campos manuales ({len(txt_files)} archivos,"
+                           f" chunk={chunk_size})",
+                           time.time() - t0)
         logging.info(f"✓ FAISS creado con chunking optimizado para campos manuales")
 
-        # Obtener configuración
+        # Sub-fase 4b: extracción paralela
+        t0 = time.time()
         llm_provider = state.get('llm_provider') or os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')
-        k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))  # K específico para campos manuales
+        k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
         payload = state.get('payload')
-
-        # Ejecutar extracción en paralelo (con límite de workers para evitar rate limiting)
         max_workers_config = int(os.getenv('CAMPOS_MANUALES_MAX_WORKERS', '3'))
         max_workers = min(max_workers_config, len(campos_manuales))
         logging.info(f"Ejecutando {len(campos_manuales)} agentes (máx {max_workers} en paralelo)...")
 
         resultados = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Crear futures para cada campo con delay escalonado
             futures = {}
             for i, campo in enumerate(campos_manuales):
-                # Añadir pequeño delay entre submissions para evitar burst inicial
                 if i > 0:
-                    time.sleep(0.5)  # 500ms entre cada submission
-
-                # Obtener configuración de retry desde .env
+                    time.sleep(0.5)
                 max_retries = int(os.getenv('CAMPOS_MANUALES_MAX_RETRIES', '3'))
                 initial_delay = float(os.getenv('CAMPOS_MANUALES_INITIAL_DELAY', '2.0'))
-
                 future = executor.submit(
                     _extraer_campo_individual,
-                    campo,
-                    vectorstore,
-                    payload,
-                    llm_provider,
-                    k,
-                    max_retries,
-                    initial_delay
+                    campo, vectorstore, payload, llm_provider,
+                    k, max_retries, initial_delay
                 )
                 futures[future] = campo
 
-            # Recolectar resultados a medida que se completan
             for future in as_completed(futures):
                 campo = futures[future]
                 try:
@@ -787,9 +816,12 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
                     logging.error(f"Error en agente {campo}: {e}")
                     resultados.append({"campo": campo, "valor": f"Error: {str(e)}"})
 
-        # Construir JSON de resultados
-        resultado_json = {r["campo"]: r["valor"] for r in resultados}
+        state = add_tiempo(state, _NODO, "extraccion_paralela",
+                           f"Extracción paralela de {len(campos_manuales)} campos"
+                           f" ({max_workers} workers)",
+                           time.time() - t0)
 
+        resultado_json = {r["campo"]: r["valor"] for r in resultados}
         logging.info(f"✓ Extracción paralela completada:")
         for campo, valor in resultado_json.items():
             logging.info(f"  - {campo}: {valor[:50]}...")
@@ -802,6 +834,9 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
         logging.exception(error_msg)
         state['resultado_campos_manuales'] = {}
 
+    state = add_tiempo(state, _NODO, "total",
+                       "Total nodo campos_manuales",
+                       time.time() - t_nodo)
     return state
 
 

@@ -81,6 +81,7 @@ class CatalogacionState(TypedDict, total=False):
     errores: List[str]
     warnings: List[str]
     tiempo_total: Optional[float]
+    tiempos: List[Dict[str, Any]]  # Registro de tiempos por fase interna
 
 
 def create_initial_state(
@@ -138,7 +139,8 @@ def create_initial_state(
         # Metadata
         errores=[],
         warnings=[],
-        tiempo_total=None
+        tiempo_total=None,
+        tiempos=[]
     )
 
 
@@ -188,6 +190,37 @@ def validate_state(state: CatalogacionState) -> tuple[bool, List[str]]:
         errors.append("payload no tiene todos los campos requeridos")
 
     return len(errors) == 0, errors
+
+
+def add_tiempo(
+    state: CatalogacionState,
+    nodo: str,
+    fase: str,
+    descripcion: str,
+    segundos: float,
+) -> CatalogacionState:
+    """
+    Helper para registrar el tiempo de una fase interna en el estado.
+
+    Args:
+        state: Estado actual
+        nodo: Nombre del nodo LangGraph (ej: "nodo_1_descargar_adjuntos")
+        fase: Sub-fase dentro del nodo (ej: "download_api")
+        descripcion: Descripción legible de lo que se midió
+        segundos: Tiempo en segundos
+
+    Returns:
+        CatalogacionState: Estado actualizado con el tiempo registrado
+    """
+    if 'tiempos' not in state:
+        state['tiempos'] = []
+    state['tiempos'].append({
+        "nodo": nodo,
+        "fase": fase,
+        "descripcion": descripcion,
+        "segundos": round(segundos, 4),
+    })
+    return state
 
 
 def add_error(state: CatalogacionState, error: str) -> CatalogacionState:
