@@ -165,11 +165,16 @@ class CatalogacionComputadores:
         return "\n\n".join(doc.page_content for doc in docs)
 
     def augment_query(self, question: str) -> str:
-        """Aumenta la query con términos técnicos relevantes"""
+        """Aumenta la query con términos técnicos relevantes para mejorar el retrieval"""
         texto_extra = (
-            "\n\nAtributos: Tipo, Modelo, Part Number, P/N, SKU, "
-            "Código de Producto, Laptop, Notebook, Desktop, AIO, All in One, "
-            "Especificaciones"
+            "\n\nAtributos: Tipo, Modelo, Part Number, P/N, SKU, Código de Producto, "
+            "Laptop, Notebook, Desktop, AIO, All in One, "
+            "Procesador, CPU, Intel, AMD, Apple, Core, Ryzen, "
+            "RAM, Memoria, DDR4, DDR5, LPDDR, Memoria Unificada, "
+            "Almacenamiento, SSD, HDD, NVMe, eMMC, Disco, "
+            "Sistema Operativo, Windows, macOS, Linux, "
+            "Pantalla, Display, Monitor, pulgadas, "
+            "Marca, Fabricante, Especificaciones, Ficha Técnica"
         )
         return question + texto_extra
 
@@ -490,27 +495,31 @@ class CatalogacionComputadores:
         if procesador and procesador not in ['No disponible', 'No especificado']:
             proc_norm = self._normalize_proc(procesador)
 
-            # Completar núcleos - solo actualizar claves que ya existen en el resultado
-            nucleos_actual = resultado.get('Nucleos') or resultado.get('nucleos')
-            if nucleos_actual in ['No disponible', 'No especificado', None, '']:
-                nucleos = self.dict_nucleos.get(procesador) or self.dict_nucleos_norm.get(proc_norm)
-                if nucleos:
-                    for key in ('Nucleos', 'nucleos'):
-                        if key in resultado:
-                            resultado[key] = str(nucleos)
-                    logging.info(f"  ✓ Completado Nucleos: {nucleos} (desde diccionario)")
-                else:
-                    logging.info(f"  ⚠ Procesador no encontrado en diccionario: '{procesador}'")
+            # Nucleos: siempre sobreescribir con el diccionario si el procesador está en él
+            nucleos = self.dict_nucleos.get(procesador) or self.dict_nucleos_norm.get(proc_norm)
+            if nucleos:
+                for key in ('Nucleos', 'nucleos'):
+                    if key in resultado:
+                        prev = resultado[key]
+                        resultado[key] = str(nucleos)
+                        if str(prev) != str(nucleos):
+                            logging.info(f"  ✓ Nucleos corregido: {prev} → {nucleos} (diccionario)")
+                        else:
+                            logging.info(f"  ✓ Nucleos confirmado: {nucleos} (diccionario)")
+            else:
+                logging.info(f"  ⚠ Procesador no encontrado en diccionario de núcleos: '{procesador}'")
 
-            # Completar hilos - solo actualizar claves que ya existen en el resultado
-            hilos_actual = resultado.get('Hilos') or resultado.get('hilos')
-            if hilos_actual in ['No disponible', 'No especificado', None, '']:
-                hilos = self.dict_hilos.get(procesador) or self.dict_hilos_norm.get(proc_norm)
-                if hilos:
-                    for key in ('Hilos', 'hilos'):
-                        if key in resultado:
-                            resultado[key] = str(hilos)
-                    logging.info(f"  ✓ Completado Hilos: {hilos} (desde diccionario)")
+            # Hilos: siempre sobreescribir con el diccionario si el procesador está en él
+            hilos = self.dict_hilos.get(procesador) or self.dict_hilos_norm.get(proc_norm)
+            if hilos:
+                for key in ('Hilos', 'hilos'):
+                    if key in resultado:
+                        prev = resultado[key]
+                        resultado[key] = str(hilos)
+                        if str(prev) != str(hilos):
+                            logging.info(f"  ✓ Hilos corregido: {prev} → {hilos} (diccionario)")
+                        else:
+                            logging.info(f"  ✓ Hilos confirmado: {hilos} (diccionario)")
 
         return resultado
 
@@ -549,9 +558,9 @@ class CatalogacionComputadores:
         from agents.retriever_diccionario_comp import search_diccionario_balanced, format_docs_for_llm
 
         query_parts = []
-        for key in ['Tipo', 'Modelo', 'Procesador', 'Marca']:
+        for key in ['Tipo', 'Modelo', 'Procesador', 'Marca', 'Tipo RAM', 'Tipo Almacenamiento', 'Sistema Operativo']:
             value = resultado_adjuntos.get(key)
-            if value and value != 'No disponible':
+            if value and value not in ('No disponible', 'No especificado'):
                 query_parts.append(f"{key}: {value}")
 
         if query_parts:
@@ -574,16 +583,19 @@ class CatalogacionComputadores:
                     chain = prompt | self.llm
                     response = chain.invoke({
                         "contexto_diccionario": contexto_dict,
-                        "resultado_actual": str(resultado_adjuntos)
+                        "resultado_actual": json.dumps(resultado_adjuntos, ensure_ascii=False, indent=2)
                     })
                     _t("llm_normalizacion",
                        f"Llamada LLM ({self.llm_provider}) para normalización con diccionario",
                        time.time() - t0)
 
-                    import json
-                    resultado_normalizado = json.loads(response.content)
-                    logging.info(f"  ✓ Normalización RAG completada")
-                    resultado_final = resultado_normalizado
+                    resultado_normalizado = self._parse_response_diccionario(response.content)
+                    if resultado_normalizado and isinstance(resultado_normalizado, dict):
+                        logging.info(f"  ✓ Normalización RAG completada")
+                        resultado_final = resultado_normalizado
+                    else:
+                        logging.warning(f"  Normalización RAG devolvió formato inesperado, usando resultado previo")
+                        resultado_final = resultado_adjuntos
                 else:
                     logging.info(f"  No se encontraron docs en diccionario, usando resultado previo")
                     resultado_final = resultado_adjuntos

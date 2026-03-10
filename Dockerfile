@@ -1,6 +1,6 @@
 # Dockerfile para ChileCompra GenAI - API de Catalogación
 # Imagen base con Python 3.11
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Metadata
 LABEL maintainer="your-email@example.com"
@@ -67,4 +67,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8000/health')"
 
 # Comando por defecto
-CMD ["python", "main.py"]
+# Para desarrollo local: python main.py (con DEV_RELOAD=true en .env)
+# Para producción: gunicorn con uvicorn workers (máximo paralelismo sin mezcla de estado)
+CMD ["gunicorn", "main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "2", "--bind", "0.0.0.0:8000", "--timeout", "300", "--graceful-timeout", "30"]

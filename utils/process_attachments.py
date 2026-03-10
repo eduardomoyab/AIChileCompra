@@ -1,23 +1,35 @@
 import os
+import io
 import logging
 import unicodedata
 import gc
 from tqdm import tqdm
-from PyPDF2 import PdfReader
-import easyocr
 from docx import Document
 from openpyxl import load_workbook
 from bs4 import BeautifulSoup
 from typing import Optional, List
+import fitz  # PyMuPDF
+import pytesseract
+from PIL import Image
 
 # Configuración por defecto
 MAX_PAGES = 15
 TEXT_THRESHOLD = 100
 MAX_FILENAME_LENGTH = 100
 
+# Ruta al ejecutable de Tesseract (configurable vía variable de entorno)
+# En Windows: instalar desde https://github.com/UB-Mannheim/tesseract/wiki
+# y agregar al PATH, o definir TESSERACT_PATH en el .env
+_tesseract_path = os.getenv("TESSERACT_PATH")
+if _tesseract_path:
+    pytesseract.pytesseract.tesseract_cmd = _tesseract_path
+
 
 class AttachmentProcessor:
-    """Procesa archivos adjuntos extrayendo texto de diversos formatos"""
+    """Procesa archivos adjuntos extrayendo texto de diversos formatos.
+    PDFs e imágenes: PyMuPDF (texto nativo) + Pytesseract (OCR para páginas escaneadas).
+    Procesamiento 100% local, sin dependencias cloud ni carga de modelos en RAM.
+    """
 
     def __init__(self, attachments_path: str, output_path: Optional[str] = None,
                  blacklist: Optional[List[str]] = None, use_gpu: bool = False):
@@ -28,11 +40,10 @@ class AttachmentProcessor:
             attachments_path (str): Ruta a la carpeta con los adjuntos descargados
             output_path (str, optional): Ruta donde guardar los archivos procesados
             blacklist (list, optional): Lista de palabras para filtrar archivos
-            use_gpu (bool): Si usar GPU para OCR
+            use_gpu (bool): Ignorado (mantenido por compatibilidad)
         """
         self.attachments_path = os.path.abspath(attachments_path)
 
-        # Si no se especifica output_path, usar 'processed_attachments' en el mismo nivel
         if output_path is None:
             parent_dir = os.path.dirname(self.attachments_path)
             self.output_path = os.path.join(parent_dir, 'processed')
@@ -40,10 +51,6 @@ class AttachmentProcessor:
             self.output_path = os.path.abspath(output_path)
 
         self.blacklist = blacklist if blacklist else []
-        self.use_gpu = use_gpu
-
-        # Inicializar OCR reader
-        self.reader = easyocr.Reader(['es'], gpu=self.use_gpu)
 
         # Archivos omitidos
         self.skipped_files = set()
@@ -85,49 +92,39 @@ class AttachmentProcessor:
             return False
         return any(word.lower() in text.lower() for word in self.blacklist)
 
-    def _extract_text_from_pdf(self, pdf_path: str, ocr_ok: bool = False) -> Optional[str]:
+    def _ocr_image(self, img: Image.Image) -> str:
+        """Aplica pytesseract a una imagen PIL y retorna el texto."""
+        try:
+            return pytesseract.image_to_string(img, lang='spa+eng')
+        except Exception as e:
+            logging.warning(f"Pytesseract error: {e}")
+            return ''
+
+    def _extract_text_from_pdf(self, pdf_path: str) -> Optional[str]:
         """
-        Extrae texto de un PDF procesando página por página.
-        - Páginas con texto nativo suficiente → extracción directa con PyPDF2.
-        - Páginas con poco/ningún texto      → OCR con PyMuPDF + EasyOCR (si ocr_ok=True).
+        Extrae texto de un PDF página por página con PyMuPDF.
+        - Páginas con texto nativo suficiente → extracción directa (ms por página).
+        - Páginas escaneadas (poco texto)     → render a imagen + Pytesseract OCR.
         """
         try:
-            reader = PdfReader(pdf_path)
-            pages_text = []      # texto final por página
-            pages_to_ocr = []    # índices de páginas que necesitan OCR
+            doc = fitz.open(pdf_path)
+            pages_text = []
 
-            # Paso 1: extracción nativa página por página
-            for i, page in enumerate(reader.pages):
+            for i, page in enumerate(doc):
                 if i >= MAX_PAGES:
                     break
-                native = page.extract_text() or ''
-                pages_text.append(native)
-                if ocr_ok and (len(native) < TEXT_THRESHOLD or
-                               len(native.split()) < TEXT_THRESHOLD // 10):
-                    pages_to_ocr.append(i)
+                native = page.get_text() or ''
 
-            # Paso 2: OCR solo en páginas que lo necesitan
-            if pages_to_ocr:
-                import fitz
-                import numpy as np
+                if len(native.strip()) >= TEXT_THRESHOLD:
+                    pages_text.append(native)
+                else:
+                    # Página escaneada: render a 200 DPI y OCR
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    ocr_text = self._ocr_image(img)
+                    pages_text.append(ocr_text)
 
-                logging.info(f"  OCR necesario en {len(pages_to_ocr)}/{len(pages_text)} páginas: {pages_to_ocr}")
-                doc = fitz.open(pdf_path)
-                mat = fitz.Matrix(2, 2)
-
-                for idx in pages_to_ocr:
-                    if idx >= len(doc):
-                        continue
-                    pix = doc[idx].get_pixmap(matrix=mat)
-                    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
-                    if pix.n == 4:
-                        img = img[:, :, :3]
-                    result = self.reader.readtext(img, detail=0)
-                    if result:
-                        pages_text[idx] = '\n'.join(result)
-
-                doc.close()
-
+            doc.close()
             combined = '\n\n'.join(t for t in pages_text if t.strip())
             return combined if combined.strip() else None
 
@@ -136,20 +133,21 @@ class AttachmentProcessor:
             return None
 
     def _extract_text_with_ocr(self, image_path: str) -> Optional[str]:
-        """Extrae texto de imágenes usando OCR"""
+        """Extrae texto de imágenes usando Pytesseract"""
         try:
-            result = self.reader.readtext(image_path, detail=0)
-            return '\n'.join(result)
+            img = Image.open(image_path)
+            text = self._ocr_image(img)
+            return text if text.strip() else None
         except Exception as e:
             logging.error(f"OCR error for {image_path}: {e}")
             return None
 
     def _extract_text_from_docx(self, docx_path: str) -> Optional[str]:
-        """Extrae texto de archivos DOCX"""
+        """Extrae texto de archivos DOCX (texto nativo sin OCR)"""
         try:
             doc = Document(docx_path)
             text = '\n'.join([paragraph.text for paragraph in doc.paragraphs])
-            return text
+            return text if text.strip() else None
         except Exception as e:
             logging.error(f"Error extracting text from DOCX {docx_path}: {e}")
             return None
@@ -160,7 +158,7 @@ class AttachmentProcessor:
             with open(html_path, 'r', encoding='utf-8') as file:
                 soup = BeautifulSoup(file, 'html.parser')
                 text = soup.get_text(separator='\n')
-            return text
+            return text if text.strip() else None
         except Exception as e:
             logging.error(f"Error extracting text from HTML {html_path}: {e}")
             return None
@@ -175,7 +173,7 @@ class AttachmentProcessor:
                 for row in worksheet.iter_rows(values_only=True):
                     row_text = "\t".join([str(cell) if cell is not None else "" for cell in row])
                     text += row_text + "\n"
-            return text
+            return text if text.strip() else None
         except Exception as e:
             logging.error(f"Error extracting text from XLSX {xlsx_path}: {e}")
             return None
@@ -185,7 +183,7 @@ class AttachmentProcessor:
         ext = file_path.lower()
 
         if ext.endswith('.pdf'):
-            return self._extract_text_from_pdf(file_path, ocr_ok=True)
+            return self._extract_text_from_pdf(file_path)
         elif ext.endswith(('.jpg', '.jpeg', '.png')):
             return self._extract_text_with_ocr(file_path)
         elif ext.endswith('.docx'):
@@ -234,27 +232,22 @@ class AttachmentProcessor:
         errors = []
 
         try:
-            # Obtener lista de archivos a procesar
             files_to_process = []
 
             for file in os.listdir(self.attachments_path):
                 file_path = os.path.join(self.attachments_path, file)
 
-                # Solo archivos soportados
                 if not file.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png', '.docx', '.html', '.xlsx')):
                     continue
 
-                # Construir nombre del archivo de salida
                 base_name = os.path.splitext(file)[0]
                 normalized_name = self._normalize_filename(base_name)
                 txt_path = os.path.join(self.output_path, f"{normalized_name}.txt")
 
-                # Verificar si ya fue procesado
                 if os.path.exists(txt_path):
                     logging.info(f"Already processed: {file}")
                     continue
 
-                # Verificar si está en la lista de omitidos
                 if file in self.skipped_files:
                     logging.info(f"Previously skipped: {file}")
                     skipped_count += 1
@@ -262,13 +255,10 @@ class AttachmentProcessor:
 
                 files_to_process.append((file, file_path, txt_path))
 
-            # Procesar archivos
             for file, file_path, txt_path in tqdm(files_to_process, desc="Processing attachments"):
                 try:
-                    # Extraer texto
                     text_content = self._extract_text_from_file(file_path)
 
-                    # Verificar blacklist
                     if self.blacklist and text_content and self._contains_blacklisted_word(text_content):
                         logging.info(f"Skipped (blacklist): {file}")
                         self._add_to_skipped_files(file)
@@ -281,7 +271,6 @@ class AttachmentProcessor:
                         skipped_count += 1
                         continue
 
-                    # Extraer código cotización y RUT del path
                     # Formato esperado: attachments/{codigo_cotizacion}/{rut_proveedor}/archivo.ext
                     path_parts = self.attachments_path.split(os.sep)
                     if len(path_parts) >= 2:
@@ -291,11 +280,9 @@ class AttachmentProcessor:
                         rut_proveedor = "unknown"
                         codigo_cotizacion = "unknown"
 
-                    # Guardar archivo de texto
                     self._save_text_file(txt_path, codigo_cotizacion, rut_proveedor, file, text_content)
                     processed_count += 1
 
-                    # Limpiar memoria
                     gc.collect()
 
                 except Exception as e:
@@ -331,7 +318,7 @@ def process_attachments_simple(attachments_path: str, output_path: Optional[str]
         attachments_path (str): Ruta a la carpeta con los adjuntos descargados
         output_path (str, optional): Ruta donde guardar archivos procesados
         blacklist (list, optional): Lista de palabras para filtrar
-        use_gpu (bool): Si usar GPU para OCR
+        use_gpu (bool): Ignorado (mantenido por compatibilidad)
 
     Returns:
         dict: Resultado del procesamiento
@@ -344,5 +331,3 @@ def process_attachments_simple(attachments_path: str, output_path: Optional[str]
     """
     processor = AttachmentProcessor(attachments_path, output_path, blacklist, use_gpu)
     return processor.process_attachments()
-
-

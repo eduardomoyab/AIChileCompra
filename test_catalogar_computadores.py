@@ -23,27 +23,7 @@ import requests
 API_URL = "http://localhost:8000"
 API_KEY = "1234"
 TOKEN_BEARER = (
-    "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICI2Rk1NaXFwVWRLY3Ryb0Iw"
-    "eXgwRWdKWS1xVDZIVDBEQXgyR3JvWFlja25JIn0.eyJleHAiOjE3NzI3OTU4OTQsImlhdCI6"
-    "MTc3Mjc2NzA5NCwianRpIjoiOTIzMGU2MzgtZmNkMy00MjhjLThlNzUtZjEwMTUyZjcyM2M5"
-    "IiwiaXNzIjoiaHR0cHM6Ly9oZWltZGFsbC5tZXJjYWRvcHVibGljby5jbC9hdXRoL3JlYWxt"
-    "cy9jaGlsZWNvbXByYXJlYWxtIiwiYXVkIjoiYWNjb3VudCIsInN1YiI6ImY6YWQ3MGUxMjgt"
-    "YzQzZi00NTBkLWE4ODctZjhhMGNlYzc3ZWE1OjIxODYyNjRfMTQwMTY0OSIsInR5cCI6IkJl"
-    "YXJlciIsImF6cCI6Im1lcmNhZG9QdWJsaWNvQ2xpZW50Iiwic2lkIjoiMTdjN2IxMzMtNTUz"
-    "MS00OThhLTljYWMtOGZmNzlkYTMxZWI4IiwiYWxsb3dlZC1vcmlnaW5zIjpbIioiXSwicmVh"
-    "bG1fYWNjZXNzIjp7InJvbGVzIjpbImNvbnN1bW9zZXJ2aWNpbyIsIm9mZmxpbmVfYWNjZXNz"
-    "IiwidW1hX2F1dGhvcml6YXRpb24iXX0sInJlc291cmNlX2FjY2VzcyI6eyJhY2NvdW50Ijp7"
-    "InJvbGVzIjpbIm1hbmFnZS1hY2NvdW50IiwibWFuYWdlLWFjY291bnQtbGlua3MiLCJ2aWV3"
-    "LXByb2ZpbGUiXX19LCJzY29wZSI6Im9wZW5pZCBlbWFpbCBwcm9maWxlIiwiY29kaWdvT3Jn"
-    "YW5pc21vIjoiMTQwMTY0OSIsImVtYWlsX3ZlcmlmaWVkIjpmYWxzZSwiY29kaWdvVXN1YXJp"
-    "byI6IjIxODYyNjQiLCJuYW1lIjoiRWR1YXJkbyBBbmRyw6lzIE1veWEgQnJpb25lcyIsInRp"
-    "cG9Vc3VhcmlvIjoiUHJvdmVlZG9yIiwicHJlZmVycmVkX3VzZXJuYW1lIjoiMjE4NjI2NF8x"
-    "NDAxNjQ5IiwiZ2l2ZW5fbmFtZSI6IkVkdWFyZG8gQW5kcsOpcyBNb3lhIEJyaW9uZXMifQ.Z"
-    "PrmVKdmHOA0wj2KCcm1HpeSCrxmph1bWFo0o7xMzoS6_AL8lzb6d2XOy3HnB8Uo-cMLy1G0x"
-    "Op8KtcIfe1ADuYgs1xX_-lNtUeXXruk4-KK1pBwBoRjbKtYtQ1Oh4dPRgC-Pmlo9zfA3lmyyN"
-    "Qh-_cMhx6XnpsIUNtko1QVO1hzUeq4eSsaz_YauamcN4iWiY9UsJZKszasqHR1irJbXxVoVh"
-    "d-7bvqEr37t02HXcYW9d3owFpnmXfTmxr8qTUZOt7T0x2wvH6X8gSSPbvy12Q3GU8kLByMXY"
-    "gIL55UPpGNk_Gd55jj4u3zAXIjaZdtrs62g6UOQDL6R2qdtbKYEQ"
+    "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICI2Rk1NaXFwVWRLY3Ryb0IweXgwRWdKWS1xVDZIVDBEQXgyR3JvWFlja25JIn0.eyJleHAiOjE3NzI4NTAxNzUsImlhdCI6MTc3MjgyMTM3NSwianRpIjoiMThiNWI5ZWQtOWMyOC00MTgwLThmNjYtZTgwNzBkNWU5NGJlIiwiaXNzIjoiaHR0cHM6Ly9oZWltZGFsbC5tZXJjYWRvcHVibGljby5jbC9hdXRoL3JlYWxtcy9jaGlsZWNvbXByYXJlYWxtIiwiYXVkIjoiYWNjb3VudCIsInN1YiI6ImY6YWQ3MGUxMjgtYzQzZi00NTBkLWE4ODctZjhhMGNlYzc3ZWE1OjIxODYyNjRfMTQwMTY0OSIsInR5cCI6IkJlYXJlciIsImF6cCI6Im1lcmNhZG9QdWJsaWNvQ2xpZW50Iiwic2lkIjoiODBhZDZmNjAtYmZkZi00YWY4LThkNmUtYjc4YjA1MDdiOGU5IiwiYWxsb3dlZC1vcmlnaW5zIjpbIioiXSwicmVhbG1fYWNjZXNzIjp7InJvbGVzIjpbImNvbnN1bW9zZXJ2aWNpbyIsIm9mZmxpbmVfYWNjZXNzIiwidW1hX2F1dGhvcml6YXRpb24iXX0sInJlc291cmNlX2FjY2VzcyI6eyJhY2NvdW50Ijp7InJvbGVzIjpbIm1hbmFnZS1hY2NvdW50IiwibWFuYWdlLWFjY291bnQtbGlua3MiLCJ2aWV3LXByb2ZpbGUiXX19LCJzY29wZSI6Im9wZW5pZCBlbWFpbCBwcm9maWxlIiwiY29kaWdvT3JnYW5pc21vIjoiMTQwMTY0OSIsImVtYWlsX3ZlcmlmaWVkIjpmYWxzZSwiY29kaWdvVXN1YXJpbyI6IjIxODYyNjQiLCJuYW1lIjoiRWR1YXJkbyBBbmRyw6lzIE1veWEgQnJpb25lcyIsInRpcG9Vc3VhcmlvIjoiUHJvdmVlZG9yIiwicHJlZmVycmVkX3VzZXJuYW1lIjoiMjE4NjI2NF8xNDAxNjQ5IiwiZ2l2ZW5fbmFtZSI6IkVkdWFyZG8gQW5kcsOpcyBNb3lhIEJyaW9uZXMifQ.UEC2_GZ6fA8jlJRsdSZ12SqyymWEZcSY_PiGo_JT1pms4Y3oCY0TxFa4o0g5CQ-sr-8wBrDRislJIurWH9J5ffDa4FT48wY-N5bte4wjL1LcDKEthdC6EMwEES-jgqqkZXtIKHH9JmrRdFHl7eb3prmJRVLHp8-NUv1OGdyer1ryDrL6n-Wd0fL8MPXQ97O8Y7ty7mTQW1r05tusWTESUNebpBW6nXUYa54TbPq1R2u2Ad3NwDAhwYWMtfq0l1b0kvJAxYMIC9j9-LZn4djsghjjsFUTb1bPWmR1rlrVot-QO2eZNmdl8GuZHairvGJrSsdK0jmaLedozB_KW4uqYw"
 )
 
 CSV_INPUT = "sample_OC_100_rows_computadores.csv"
@@ -254,10 +234,10 @@ def main():
         if response is not None and exito_http:
             try:
                 data = response.json()
-                tiempos_internos = data.get("metadata", {}).get("tiempos", [])
-                resultado = data.get("resultado", {})
-                errores = data.get("errores", [])
-                warnings = data.get("warnings", [])
+                tiempos_internos = (data.get("metadata") or {}).get("tiempos", [])
+                resultado = data.get("resultado") or {}
+                errores = data.get("errores") or []
+                warnings = data.get("warnings") or []
 
                 logger.info(f"  ← Resultado: Tipo={resultado.get('Tipo','N/A')},"
                             f" Modelo={resultado.get('Modelo','N/A')}")

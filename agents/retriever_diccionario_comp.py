@@ -31,7 +31,14 @@ _vectorstore_cache = {}
 
 
 def _load_features_dict() -> tuple[List[str], List[Dict]]:
-    """Carga el diccionario de features desde .docx"""
+    """
+    Carga el diccionario de features desde .docx agrupando por sección.
+
+    Cada sección (Tipo RAM, Sistema Operativo, Tipo Almacenamiento, Marca, etc.)
+    se carga como un único documento con todos sus valores permitidos.
+    Esto permite que el LLM vea TODOS los valores canónicos de cada campo
+    en un solo retrieval, evitando normalizaciones incorrectas.
+    """
     if not os.path.exists(FEATURES_PATH):
         logging.warning(f"No se encontró {FEATURES_PATH}")
         return [], []
@@ -40,16 +47,37 @@ def _load_features_dict() -> tuple[List[str], List[Dict]]:
     texts = []
     metadatas = []
 
-    for i, para in enumerate(doc.paragraphs):
-        if para.text.strip():
-            texts.append(para.text.strip())
+    current_section = None
+    current_lines: List[str] = []
+
+    def _flush():
+        if current_section and current_lines:
+            section_text = f"{current_section}:\n" + "\n".join(current_lines)
+            texts.append(section_text)
             metadatas.append({
                 'origen': 'Features',
                 'archivo': 'diccionario_features.docx',
-                'parrafo_num': i
+                'seccion': current_section
             })
 
-    logging.info(f"Cargado diccionario Features: {len(texts)} párrafos")
+    for para in doc.paragraphs:
+        line = para.text.strip()
+        if not line:
+            continue
+        if line.startswith('-'):
+            # Valor dentro de la sección actual
+            if current_section is not None:
+                current_lines.append(line)
+        else:
+            # Nuevo encabezado de sección
+            _flush()
+            current_section = line
+            current_lines = []
+
+    _flush()  # Guardar la última sección
+
+    logging.info(f"Cargado diccionario Features: {len(texts)} secciones — "
+                 f"{[m['seccion'] for m in metadatas]}")
     return texts, metadatas
 
 
@@ -153,11 +181,10 @@ def search_diccionario_balanced(
         >>> origins = [doc.metadata['origen'] for doc in results]
         >>> assert 'Features' in origins and 'Procesador' in origins
     """
-    if k_total % 2 != 0:
-        logging.warning(f"k_total debe ser par para balancear orígenes. Ajustando de {k_total} a {k_total + 1}")
-        k_total = k_total + 1
-
-    k_per_origin = k_total // 2
+    # Features: recuperar hasta 4 secciones (Tipo RAM, SO, Tipo Almacenamiento, Marca, etc.)
+    # Procesador: 3 docs para que el LLM tenga más candidatos y elija el más exacto
+    k_features = 4
+    k_procesador = 3
 
     # Cargar vector stores FAISS (uno para cada origen)
     vs_features = _get_or_create_vectorstore('Features')
@@ -169,14 +196,14 @@ def search_diccionario_balanced(
     results_features = search_in_faiss(
         vs_features,
         query,
-        k=k_per_origin,
+        k=k_features,
         filter={"origen": "Features"}
     )
 
     results_procesador = search_in_faiss(
         vs_procesador,
         query,
-        k=k_per_origin,
+        k=k_procesador,
         filter={"origen": "Procesador"}
     )
 

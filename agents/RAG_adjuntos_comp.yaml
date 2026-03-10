@@ -29,8 +29,9 @@ rag_template: |
     * "AIO" — computador All-in-One: monitor y CPU integrados en una sola unidad
     * "Laptop" — computador portátil/notebook
     * "Desktop" — computador de escritorio con torre separada del monitor
-    * "Otro" — solo si el producto claramente NO es ninguno de los anteriores (ej: impresora, tablet, servidor)
-    Usa toda la información disponible: contenido de adjuntos, nombres de archivos ("Nombre Original"), y descripciones del producto. Si el producto es un computador pero la evidencia no permite distinguir entre AIO/Laptop/Desktop, elige "Desktop" antes que "Otro".
+    * "Otro" — ÚNICAMENTE si el producto a catalogar claramente NO es ningún tipo de computador (ej: impresora, proyector, tablet, servidor, mouse, teclado)
+    IMPORTANTE — Adjuntos con múltiples productos: es frecuente que los adjuntos incluyan accesorios (mouse, teclado, mochila, cámara web, etc.) junto al computador principal. En ese caso, clasifica según el producto principal de la compra, que se identifica por las descripciones (DescripcionProductoComprador, DescripcionProductoProveedor) y el productoname. Si alguna descripción menciona "notebook", "laptop", "computador portátil", "desktop", "computador de escritorio", "AIO" o "todo en uno", ese es el tipo correcto aunque los adjuntos también mencionen accesorios. Solo clasifica como "Otro" si las descripciones mismas no corresponden a ningún tipo de computador.
+    Si el producto es un computador pero la evidencia no permite distinguir entre AIO/Laptop/Desktop, elige "Desktop" antes que "Otro".
 
   - **Part Number**: Debes extraer el número de parte (Part Number, P/N, SKU, Código de Producto) del equipo. Apóyate en la información relevante de los adjuntos. El Part Number suele ser un código alfanumérico único que identifica el producto del fabricante (ejemplo: "15-EH1005LA", "82KT00GMUS", "M1-23A4E5"). Si no se puede identificar, indica "No disponible".
 

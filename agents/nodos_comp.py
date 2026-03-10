@@ -522,6 +522,14 @@ def _limpiar_valor(valor: str, campo: str = "") -> str:
         if match:
             return f"{match.group(1)} {unit}"
 
+    # 5b. Si el campo es Procesador/CPU → eliminar velocidades de reloj, núcleos y texto extra
+    if any(kw in campo_lower for kw in ["procesador", "cpu", "processor"]):
+        # Cortar en la primera coma o paréntesis (ej: "Intel Core i7-1355U (1.7 GHz)" → "Intel Core i7-1355U")
+        valor = re.sub(r'\s*[,\(].*$', '', valor)
+        # Cortar velocidades de reloj si el LLM las dejó antes del paréntesis (ej: "... 5.0 GHz")
+        valor = re.sub(r'\s+\d+\.?\d*\s*GHz.*$', '', valor, flags=re.IGNORECASE)
+        return valor.strip()
+
     # 6. Si el campo contiene palabras clave numéricas (Nucleos, Hilos, Cores, Threads, etc.)
     numeric_keywords = ["nucleo", "hilo", "core", "thread", "puerto", "slot", "canal"]
     if any(kw in campo_lower for kw in numeric_keywords):
@@ -567,9 +575,27 @@ def _extraer_campo_individual(
     Returns:
         dict: {"campo": nombre_campo, "valor": valor_extraído}
     """
+    campo_lower = campo.lower()
+
+    # Construir query semántica enriquecida con contexto del producto para campos clave
+    query_busqueda = campo
+    nombre_producto = (
+        payload.get("productoname") or
+        payload.get("DescripcionProductoComprador") or
+        ""
+    )
+    desc_proveedor = payload.get("DescripcionProductoProveedor") or ""
+
+    if any(kw in campo_lower for kw in ["marca", "fabricante", "manufacturer"]):
+        # Para marca: usar el nombre del producto (la marca suele estar implícita en el modelo)
+        query_busqueda = f"marca fabricante {nombre_producto[:100]}"
+    elif any(kw in campo_lower for kw in ["procesador", "cpu", "processor"]):
+        # Para procesador: usar keywords técnicos de marcas + producto para localizar el chunk correcto
+        query_busqueda = f"procesador Intel AMD Apple Core Ryzen GHz {nombre_producto[:50]}"
+
     # Búsqueda semántica (solo una vez, fuera del loop de retry)
     try:
-        retrieved_docs = vectorstore.similarity_search(campo, k=k)
+        retrieved_docs = vectorstore.similarity_search(query_busqueda, k=k)
         if not retrieved_docs:
             logging.warning(f"  [Agente {campo}] No se encontraron documentos relevantes")
             return {"campo": campo, "valor": "No disponible"}
@@ -582,9 +608,6 @@ def _extraer_campo_individual(
         f"Fragmento {i+1}:\n{doc.page_content}"
         for i, doc in enumerate(retrieved_docs)
     ])
-
-    # Detectar el tipo de dato esperado según el nombre del campo
-    campo_lower = campo.lower()
 
     # Determinar instrucciones específicas según patrones en el nombre del campo
     instrucciones_especificas = []
@@ -606,17 +629,40 @@ def _extraer_campo_individual(
         instrucciones_especificas.append("- Responde SOLO el TIPO o tecnología, SIN capacidades ni números")
         instrucciones_especificas.append("- Elimina cantidades como GB, TB, MHz, etc. de tu respuesta")
         if "ram" in campo_lower:
-            instrucciones_especificas.append("- Ejemplo de respuesta correcta: 'DDR4', 'DDR5', 'LPDDR5'")
+            instrucciones_especificas.append("- Ejemplo de respuesta correcta: 'DDR4', 'DDR5', 'LPDDR4', 'LPDDR4X', 'LPDDR5', 'LPDDR5X'")
+            instrucciones_especificas.append("- Para productos Apple con memoria unificada, responde 'Memoria Unificada'")
+            instrucciones_especificas.append("- CRÍTICO: Si el documento NO menciona explícitamente el tipo de RAM, responde 'No disponible'. NUNCA lo deduzcas de la capacidad (GB), del procesador ni del modelo.")
+            instrucciones_especificas.append("- Copia EXACTAMENTE la denominación con su sufijo: LPDDR4X ≠ LPDDR4, LPDDR5X ≠ LPDDR5. Si ves el sufijo X en el documento, inclúyelo.")
         elif "almacenamiento" in campo_lower or "disco" in campo_lower:
             instrucciones_especificas.append("- Ejemplo de respuesta correcta: 'SSD M.2', 'SSD NVMe', 'HDD SATA'")
     elif any(kw in campo_lower for kw in ["nucleo", "hilo", "core", "thread"]):
         instrucciones_especificas.append("- Responde SOLO el número (ej: '8', '16')")
     elif any(kw in campo_lower for kw in ["marca", "fabricante", "manufacturer"]):
-        instrucciones_especificas.append("- Responde SOLO el nombre de la marca (ej: 'HP', 'Lenovo', 'Dell')")
+        instrucciones_especificas.append("- Responde SOLO el nombre de la marca (ej: 'HP', 'Lenovo', 'Dell', 'Acer')")
+        instrucciones_especificas.append("- La marca puede aparecer explícita ('HP', 'Lenovo') o implícita en el nombre o número de modelo del producto")
+        instrucciones_especificas.append("- Usa tu conocimiento sobre computadores para inferir la marca a partir del nombre del modelo si no aparece escrita directamente")
+        instrucciones_especificas.append("- Si no hay información suficiente, responde 'No especificado'")
     elif any(kw in campo_lower for kw in ["procesador", "cpu", "processor"]):
-        instrucciones_especificas.append("- Responde el modelo completo del procesador (ej: 'AMD Ryzen 7 7735U', 'Intel Core i7-1355U')")
+        instrucciones_especificas.append("- Responde SOLO el nombre estándar del modelo de procesador (ej: 'AMD Ryzen 7 7735U', 'Intel Core i7-1355U', 'Apple M3')")
+        instrucciones_especificas.append("- Copia el número de modelo EXACTAMENTE: todos sus dígitos y letras (ej: '12450H', '1235U', '5700U'). NO aproximes ni sustituyas.")
+        instrucciones_especificas.append("- NO agregues información extra: velocidades de reloj (GHz/MHz), número de núcleos, generación en texto, ni descripciones adicionales")
+        instrucciones_especificas.append("- Formato correcto: 'Intel Core i7-1260P' (NO 'Intel Core i7-1260P de 12ª Generación' ni 'i7-1260P 2.1GHz 12-Core')")
+        instrucciones_especificas.append("- Incluye siempre la palabra 'Core' para Intel si corresponde (ej: 'Intel Core i5' no 'Intel i5')")
+        instrucciones_especificas.append("- Si el contexto menciona el procesador en varios formatos, elige la versión con el número de modelo más completo y específico (ej: 'Intel Core i7-1355U' sobre 'Intel Core i7 de 13ª Gen')")
+    elif "sistema operativo" in campo_lower or ("sistema" in campo_lower and "operativo" in campo_lower):
+        instrucciones_especificas.append("- Responde con el nombre EXACTO y COMPLETO del sistema operativo instalado (ej: 'Microsoft Windows 11 Pro', 'macOS', 'FreeDOS')")
+        instrucciones_especificas.append("- Selecciona UNA sola versión y edición específica — NO listes varias opciones ni combines múltiples")
+        instrucciones_especificas.append("- Si el documento menciona Windows, identifica: ¿versión 10 u 11? ¿edición Home, Pro, Enterprise, SE? Extrae lo que esté en las especificaciones del producto")
+        instrucciones_especificas.append("- Para productos Apple, responde 'macOS' salvo que indique versión específica (ej: 'macOS Ventura')")
+        instrucciones_especificas.append("- Para sistemas distintos de Windows o macOS (FreeDOS, Ubuntu, Chrome OS, Linux, etc.), extrae EXACTAMENTE lo que aparece en el documento")
+        instrucciones_especificas.append("- CRÍTICO: Si los documentos adjuntos NO mencionan ningún SO instalado, responde 'No especificado'. NUNCA asumas el SO por la marca, modelo o tipo de equipo.")
     elif any(kw in campo_lower for kw in ["modelo", "model"]) and "procesador" not in campo_lower:
         instrucciones_especificas.append("- Responde el modelo o nombre específico del producto")
+    elif "modalidad" in campo_lower:
+        instrucciones_especificas.append("- Busca si el contexto o las descripciones mencionan 'arriendo', 'arrendamiento' o 'leasing'")
+        instrucciones_especificas.append("- Si encuentras esas palabras, responde exactamente: 'Arriendo'")
+        instrucciones_especificas.append("- Si no se menciona ninguna modalidad o se habla de 'compra', 'adquisición' o 'compra ágil', responde exactamente: 'Compra'")
+        instrucciones_especificas.append("- Solo responde 'Arriendo' o 'Compra', nada más")
     else:
         instrucciones_especificas.append("- Extrae el valor exacto tal como aparece en el contexto")
 
@@ -639,27 +685,26 @@ Tu tarea es extraer ÚNICAMENTE la información sobre **{campo}** del producto.
 
 REGLAS GENERALES:
 1. Responde SOLO con el valor extraído, SIN explicaciones ni texto adicional
-2. Si la información no está clara o no existe, responde "No especificado"
-3. NO inventes información - solo extrae lo que realmente está en el contexto
-4. Sé PRECISO y conciso
-5. Elimina caracteres especiales innecesarios
+2. FUENTE PRINCIPAL: El "Contexto de documentos" (fichas técnicas adjuntas) es la fuente autorizada. Las descripciones del producto sirven ÚNICAMENTE para identificar el producto correcto dentro de los adjuntos — NO son fuente de valores. Si la ficha técnica dice un procesador o RAM diferente a la descripción del proveedor, usa SIEMPRE el valor de la ficha técnica.
+3. FALLBACK: Solo si la información NO aparece en los documentos adjuntos, puedes usar la "Descripción Proveedor" como referencia secundaria. Si tampoco está ahí, responde "No especificado".
+4. NO inventes información — extrae SOLO lo que aparece explícitamente en los documentos
+5. Sé PRECISO y conciso
+6. Elimina caracteres especiales innecesarios
+7. FOCO EN EL PRODUCTO PRINCIPAL: el contexto puede contener fichas de múltiples productos (el computador principal más accesorios como mouse, teclado, mochila, etc., o varios modelos juntos como un Notebook + un AIO). Extrae el atributo ÚNICAMENTE del producto principal identificado por la "Descripción Comprador" y "Descripción Proveedor" (si dice AIO, extrae del AIO; si dice Notebook, del Notebook). Ignora especificaciones de accesorios u otros modelos.
 
 INSTRUCCIONES ESPECÍFICAS PARA ESTE CAMPO:
 {instrucciones_texto}
 
 Valor de {campo}:"""
 
+    # Crear LLM una sola vez (fuera del retry loop) — temperatura baja para máxima precisión en extracción
+    llm = get_llm(model_provider=llm_provider, temperature=0.1)
+
     # Retry loop
     delay = initial_delay
     for attempt in range(max_retries):
         try:
             logging.info(f"  [Agente {campo}] Intento {attempt + 1}/{max_retries}...")
-
-            # Crear LLM para este intento
-            llm = get_llm(
-                model_provider=llm_provider,
-                temperature=0.3
-            )
 
             # Ejecutar LLM
             response = llm.invoke(prompt)
@@ -788,7 +833,7 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
         llm_provider = state.get('llm_provider') or os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')
         k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
         payload = state.get('payload')
-        max_workers_config = int(os.getenv('CAMPOS_MANUALES_MAX_WORKERS', '3'))
+        max_workers_config = int(os.getenv('CAMPOS_MANUALES_MAX_WORKERS', '9'))
         max_workers = min(max_workers_config, len(campos_manuales))
         logging.info(f"Ejecutando {len(campos_manuales)} agentes (máx {max_workers} en paralelo)...")
 
@@ -796,14 +841,15 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for i, campo in enumerate(campos_manuales):
-                if i > 0:
-                    time.sleep(0.5)
                 max_retries = int(os.getenv('CAMPOS_MANUALES_MAX_RETRIES', '3'))
                 initial_delay = float(os.getenv('CAMPOS_MANUALES_INITIAL_DELAY', '2.0'))
+                # Procesador necesita más documentos de referencia para localizar el modelo exacto
+                campo_lower_iter = campo.lower()
+                k_campo = k + 1 if any(kw in campo_lower_iter for kw in ["procesador", "cpu", "processor"]) else k
                 future = executor.submit(
                     _extraer_campo_individual,
                     campo, vectorstore, payload, llm_provider,
-                    k, max_retries, initial_delay
+                    k_campo, max_retries, initial_delay
                 )
                 futures[future] = campo
 

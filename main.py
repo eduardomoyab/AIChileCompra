@@ -481,6 +481,18 @@ async def startup_event():
     logging.info("="*80)
     logging.info(f"LLM Provider por defecto: {os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')}")
     logging.info(f"API Key configurada: {'✓' if API_KEY != 'your-secret-api-key-here' else '✗'}")
+
+    # Pre-calentar FAISS diccionario en background para eliminar el cold-start en nodo_5
+    # El cache se vacía en cada arranque: la nueva estructura de secciones se carga correctamente
+    try:
+        from agents.retriever_diccionario_comp import _vectorstore_cache, _get_or_create_vectorstore
+        _vectorstore_cache.clear()  # Asegurar que no haya cache desactualizado
+        _get_or_create_vectorstore('Features')
+        _get_or_create_vectorstore('Procesador')
+        logging.info("✓ FAISS diccionario pre-cargado en cache (Features + Procesador)")
+    except Exception as e:
+        logging.warning(f"No se pudo pre-cargar FAISS diccionario: {e}")
+
     logging.info("API iniciada correctamente")
 
 
@@ -502,10 +514,11 @@ if __name__ == "__main__":
     logging.info(f"\nIniciando servidor en http://{HOST}:{PORT}")
     logging.info(f"Documentación en http://{HOST}:{PORT}/docs\n")
 
+    reload = os.getenv("DEV_RELOAD", "false").lower() == "true"
     uvicorn.run(
         "main:app",
         host=HOST,
         port=PORT,
-        reload=True,  # Auto-reload en desarrollo
+        reload=reload,  # Solo en desarrollo: DEV_RELOAD=true
         log_level="info"
     )

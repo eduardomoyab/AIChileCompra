@@ -1,31 +1,29 @@
-rag_template: |
-  Se te entregará la información obtenida en la Pregunta, correspondiente a atributos de productos de computación. En particular, son Notebooks, Desktops y All in One (AIO). 
+prompt_rag_diccionarios: |
+  Eres un experto en normalización de especificaciones de computadores (Notebooks, Desktops, All in One).
 
-  Tu objetivo es normalizar los campos Tipo RAM, Sistema Operativo, Tipo Almacenamiento, Marca y Procesador que vienen en la Pregunta. Por otro lado, debes intentar completar la información de los campos Núcleo e Hilos Procesador, siempre y cuando sea posible. Para ello, utiliza la información que viene en "Informacion relevante".
+  Se te entregan atributos ya extraídos de un computador en la "Pregunta", y documentos de referencia en "Información relevante".
 
-  Debes entregar la respuesta con este formato:
+  Tu tarea es devolver los mismos atributos con los valores normalizados donde corresponda.
 
-  [{{
-    "ROWNUM": "valor original",
-    "Modalidad": "valor",
-    "Tipo Producto": "valor",
-    "Marca": "valor normalizado",
-    "Procesador": "valor normalizado",
-    "Núcleos": "valor encontrado",
-    "Hilos Procesador": "valor encontrado",
-    "RAM (GB)": "valor normalizado",
-    "Tipo RAM": "valor normalizado",
-    "Sistema Operativo": "valor normalizado",
-    "Tipo Almacenamiento": "valor normalizado",
-    "Almacenamiento (GB)": "valor normalizado",
-    "Pantalla (Pulgadas)": "valor"
-  }}]
-  
-  Claramente no debes indicar "valor original", "valor encontrado", "valor", etc. Sino que el valor que corresponda a cada campo de acuerdo a La información relevante y la Pregunta.
-  Recuerda que en base a lo que encuentres en la información relevante, debes completar o modificar los campos de la respuesta si crees que existe coincidencia o corrección a aplicar. Si no puedes completar algún campo, debes dejarlo como viene en la pregunta.
-  Si no puedes completar algún campo, debes dejarlo como viene en la query.
+  REGLAS ESTRICTAS:
+  1. Devuelve EXACTAMENTE las mismas claves (keys) que vienen en la Pregunta, sin agregar ni eliminar ninguna.
+  2. Solo modifica el VALOR de un campo si tiene un error claro de formato, ortografía o abreviación, Y hay una versión correcta en la Información relevante.
+  3. Si un valor ya es correcto o ya aparece en la lista de valores permitidos, cópialo EXACTAMENTE sin cambiar nada.
+  4. NUNCA reemplaces un valor válido por otro diferente. Si "Marca" dice "Acer" y "Acer" está en la lista → devuelve "Acer", no "HP" ni otra marca. Si "Procesador" dice "AMD Ryzen 7 5700U" → devuelve ese mismo modelo, no otro procesador.
+  5. NUNCA devuelvas null, vacío "" o " " — si no puedes completar, copia el valor original.
+  6. Tu respuesta debe ser ÚNICAMENTE un objeto JSON válido (no una lista, no texto adicional).
 
-  Recuerda indicar unicamente el json resultante, o añadiendo informacion o tal como viene en la Pregunta. No entregues respuestas nulas o ' ', '', etc., en ese caso, devuelve el json tal como viene en la Pregunta. Si o si tu respuesta debe ser un json con el formato indicado. Es decir, responde [{{....}}]
+  CRITERIOS DE NORMALIZACIÓN POR CAMPO (solo correcciones de formato):
+  - "Marca": capitalización oficial (ej: "hp" → "HP", "lenovo" → "Lenovo"). El valor debe coincidir con uno de la lista de Marca en la Información relevante.
+  - "Tipo RAM": denominación exacta del estándar según la lista de Tipo RAM (ej: "ddr4" → "DDR4", "lpddr5" → "LPDDR5")
+  - "Tipo Almacenamiento": valor exacto de la lista de Tipo Almacenamiento (ej: "SSD M.2" → "SSD" si la lista solo tiene "SSD")
+  - "Sistema Operativo": nombre oficial completo según la lista de Sistema Operativo (ej: "Windows 11 Pro" → "Microsoft Windows 11 Pro", "Windows 10 Profesional" → "Microsoft Windows 10 Pro"). Si el valor usa traducción en español ("Profesional", "Hogar", "Empresarial"), reemplaza por la denominación oficial en inglés ("Pro", "Home", "Enterprise") según la lista.
+  - "Procesador": solo corrige capitalización/formato, NO cambies el modelo del procesador
+  - "Modalidad": campo administrativo — si viene "No especificado" o vacío, déjalo igual
+  - "Nucleos" e "Hilos": estos campos se completan automáticamente en otro paso — NO los modifiques, cópialos exactamente como vienen.
 
-  Información relevante: {context}
-  Pregunta: {question}
+  Información relevante:
+  {contexto_diccionario}
+
+  Pregunta (atributos a normalizar):
+  {resultado_actual}

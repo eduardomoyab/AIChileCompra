@@ -72,6 +72,20 @@ output*.json
 *.csv
 tokens_input_output.xlsx
 
+# Evaluación y análisis (archivos generados por evaluar_catalogacion.py / analysis_eval.py)
+evaluar_catalogacion.py
+evaluar_catalogacion_*.log
+evaluacion_catalogacion_*.xlsx
+analysis_eval.py
+response.json
+
+# Claude Code config
+.claude/
+
+# Tesis / material académico local
+"Tesis CA Computadores/"
+Tesis CA Computadores/
+
 # OS
 .DS_Store
 Thumbs.db
