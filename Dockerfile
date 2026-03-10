@@ -69,4 +69,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Comando por defecto
 # Para desarrollo local: python main.py (con DEV_RELOAD=true en .env)
 # Para producción: gunicorn con uvicorn workers (máximo paralelismo sin mezcla de estado)
-CMD ["gunicorn", "main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "2", "--bind", "0.0.0.0:8000", "--timeout", "300", "--graceful-timeout", "30"]
+CMD ["python", "-m", "gunicorn", "main:app", "--worker-class", "uvicorn.workers.UvicornWorker", "--workers", "2", "--bind", "0.0.0.0:8000", "--timeout", "300", "--graceful-timeout", "30"]
