@@ -12,8 +12,13 @@ import time
 import asyncio
 import re
 import shutil
+import threading
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Lock por (codigo_cotizacion, rut_proveedor) para evitar descargas concurrentes del mismo recurso
+_download_locks: Dict[str, threading.Lock] = {}
+_download_locks_mutex = threading.Lock()
 
 # Añadir el directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -63,12 +68,15 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             state['codigo_cotizacion'],
             state['rut_proveedor']
         )
-        cache_hit = False
-        if os.path.exists(attachments_dir):
-            existing_files = [f for f in os.listdir(attachments_dir)
-                            if os.path.isfile(os.path.join(attachments_dir, f))]
-            if len(existing_files) > 0:
-                cache_hit = True
+
+        def _check_cache(directory):
+            if os.path.exists(directory):
+                files = [f for f in os.listdir(directory)
+                         if os.path.isfile(os.path.join(directory, f))]
+                return len(files) > 0, files
+            return False, []
+
+        cache_hit, existing_files = _check_cache(attachments_dir)
         state = add_tiempo(state, _NODO, "check_cache",
                            f"Verificar caché local de adjuntos (hit={cache_hit})",
                            time.time() - t0)
@@ -82,15 +90,33 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
                                time.time() - t_nodo)
             return state
 
-        # Sub-fase 1b: descarga real
-        t0 = time.time()
-        downloader = state.get('downloader', None)
-        resultado = download_attachments_simple(
-            codigo_cotizacion=state['codigo_cotizacion'],
-            rut_proveedor=state['rut_proveedor'],
-            headless=True,
-            downloader=downloader
-        )
+        # Sub-fase 1b: descarga real — serializada por (cotizacion, proveedor) para evitar race conditions
+        lock_key = f"{state['codigo_cotizacion']}::{state['rut_proveedor']}"
+        with _download_locks_mutex:
+            if lock_key not in _download_locks:
+                _download_locks[lock_key] = threading.Lock()
+        download_lock = _download_locks[lock_key]
+
+        with download_lock:
+            # Re-verificar caché: puede que otro thread ya haya descargado mientras esperábamos
+            cache_hit, existing_files = _check_cache(attachments_dir)
+            if cache_hit:
+                logging.info(f"✓ Archivos descargados por otro request concurrente: {len(existing_files)} archivos")
+                state['adjuntos_descargados'] = True
+                state['adjuntos_path'] = attachments_dir
+                state = add_tiempo(state, _NODO, "total",
+                                   "Total nodo descargar_adjuntos (caché post-lock)",
+                                   time.time() - t_nodo)
+                return state
+
+            t0 = time.time()
+            downloader = state.get('downloader', None)
+            resultado = download_attachments_simple(
+                codigo_cotizacion=state['codigo_cotizacion'],
+                rut_proveedor=state['rut_proveedor'],
+                headless=True,
+                downloader=downloader
+            )
         state = add_tiempo(state, _NODO, "download_api",
                            f"Descarga desde Mercado Público (success={resultado.get('success')},"
                            f" archivos={resultado.get('total_files', 0)})",

@@ -79,6 +79,9 @@ evaluacion_catalogacion_*.xlsx
 analysis_eval.py
 response.json
 
+# Datos de muestra locales
+sample_OC_*.csv
+
 # Claude Code config
 .claude/
 
