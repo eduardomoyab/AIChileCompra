@@ -25,8 +25,13 @@ from extraer_atributos import extraer_atributos, extraer_atributos_lote, validar
 from extraer_atributos_licitaciones import extraer_atributos_licitacion
 from utils.langsmith_utils import set_langsmith
 
+from token_utils.utils import TokenPayload
+
 # Cargar variables de entorno
 load_dotenv()
+
+# Token en memoria — persiste hasta reinicio del servidor o hasta nuevo /set-token
+_token_store: dict = {}
 
 #set_langsmith()
 # Configuración de logging
@@ -283,12 +288,14 @@ async def catalogar_producto(request: CatalogarRequest,
     try:
         logging.info(f"Catalogando producto - Cotización: {request.codigo_cotizacion}, Proveedor: {request.rut_proveedor}")
 
-        # Seleccionar downloader según si se proporcionó token
+        # Seleccionar downloader: payload > token en memoria > sin token
+        token = request.token_bearer or _token_store.get("access_token")
         downloader = None
-        if request.token_bearer:
+        if token:
             from utils.get_attachments import TokenAttachmentDownloader
-            downloader = TokenAttachmentDownloader(request.token_bearer)
-            logging.info("Usando TokenAttachmentDownloader (API autenticada)")
+            downloader = TokenAttachmentDownloader(token)
+            fuente = "payload" if request.token_bearer else "set-token"
+            logging.info(f"Usando TokenAttachmentDownloader (token desde {fuente})")
         else:
             logging.info("Usando BuscadorAttachmentDownloader (API pública)")
 
@@ -409,6 +416,20 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno: {str(e)}"
         )
+
+
+@app.post("/set-token")
+async def set_token(payload: TokenPayload, api_key: str = Depends(require_api_key)):
+    global _token_store
+    _token_store = payload.model_dump()
+    return {"status": "ok"}
+
+@app.get("/get-token")
+async def get_token(api_key: str = Depends(require_api_key)):
+    if not _token_store:
+        raise HTTPException(status_code=404, detail="Token no disponible")
+    return _token_store
+
 
 
 # @app.post("/catalogar/lote", response_model=List[CatalogarResponse], dependencies=[Depends(verify_api_key)])
