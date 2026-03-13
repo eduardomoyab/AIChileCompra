@@ -167,7 +167,9 @@ def ejecutar_catalogacion(
     use_diccionarios: bool = True,
     llm_provider: str = None,
     downloader: Any = None,
-    campos_manuales_lista: List[str] = None
+    campos_manuales_lista: List[Dict] = None,
+    diccionario_similarity_threshold: float = 0.85,
+    diccionario_llm_fallback: bool = True,
 ) -> Dict[str, Any]:
     """
     Ejecuta el workflow completo de catalogación usando el grafo.
@@ -209,7 +211,9 @@ def ejecutar_catalogacion(
         payload=payload,
         use_diccionarios=use_diccionarios,
         llm_provider=llm_provider,
-        campos_manuales_lista=campos_manuales_lista
+        campos_manuales_lista=campos_manuales_lista,
+        diccionario_similarity_threshold=diccionario_similarity_threshold,
+        diccionario_llm_fallback=diccionario_llm_fallback,
     )
 
     # Agregar downloader al state si se proporcionó

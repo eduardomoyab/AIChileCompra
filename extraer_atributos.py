@@ -70,7 +70,9 @@ def extraer_atributos(
     use_diccionarios: bool = True,
     llm_provider: str = None,
     downloader: Any = None,
-    campos_manuales_lista: List[str] = None
+    campos_manuales_lista: List[Dict] = None,
+    diccionario_similarity_threshold: float = 0.85,
+    diccionario_llm_fallback: bool = True,
 ) -> Dict[str, Any]:
     """
     Extrae atributos de un producto usando el flujo completo de catalogación.
@@ -139,7 +141,9 @@ def extraer_atributos(
             use_diccionarios=use_diccionarios,
             llm_provider=llm_provider,
             downloader=downloader,
-            campos_manuales_lista=campos_manuales_lista
+            campos_manuales_lista=campos_manuales_lista,
+            diccionario_similarity_threshold=diccionario_similarity_threshold,
+            diccionario_llm_fallback=diccionario_llm_fallback,
         )
     else:
         raise ValueError(

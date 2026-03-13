@@ -60,7 +60,9 @@ class CatalogacionState(TypedDict, total=False):
     use_diccionarios: bool
     llm_provider: Optional[str]
     downloader: Optional[Any]  # Instancia global de AttachmentDownloader (opcional)
-    campos_manuales_lista: Optional[List[str]]  # Lista de campos adicionales a extraer en paralelo
+    campos_manuales_lista: Optional[List[Dict]]  # Lista de {campo, contexto} a extraer en paralelo
+    diccionario_similarity_threshold: Optional[float]  # Score mínimo para aceptar match (default 0.85)
+    diccionario_llm_fallback: Optional[bool]  # Si usar LLM cuando no hay match sobre threshold
 
     # ========== PROCESSING STATE ==========
     adjuntos_descargados: bool
@@ -90,7 +92,9 @@ def create_initial_state(
     payload: Dict[str, Any],
     use_diccionarios: bool = True,
     llm_provider: Optional[str] = None,
-    campos_manuales_lista: Optional[List[str]] = None
+    campos_manuales_lista: Optional[List[Dict]] = None,
+    diccionario_similarity_threshold: float = 0.85,
+    diccionario_llm_fallback: bool = True,
 ) -> CatalogacionState:
     """
     Crea el estado inicial para el workflow de catalogación.
@@ -122,6 +126,8 @@ def create_initial_state(
         use_diccionarios=use_diccionarios,
         llm_provider=llm_provider,
         campos_manuales_lista=campos_manuales_lista,
+        diccionario_similarity_threshold=diccionario_similarity_threshold,
+        diccionario_llm_fallback=diccionario_llm_fallback,
 
         # Processing state (all False/None initially)
         adjuntos_descargados=False,
@@ -140,7 +146,8 @@ def create_initial_state(
         errores=[],
         warnings=[],
         tiempo_total=None,
-        tiempos=[]
+        tiempos=[],
+        adjuntos_vectorstore=None,
     )
 
 

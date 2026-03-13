@@ -289,7 +289,37 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
                            f"Inicializar LLM ({catalogador.llm_provider})",
                            time.time() - t0)
 
-        # Sub-fases 3c..3f: dentro de catalogar_producto
+        # Sub-fase 3c: crear FAISS una sola vez y guardarlo en estado para reutilizar en nodo_4
+        t0 = time.time()
+        processed_path = state['processed_path']
+        all_txt_files = [
+            os.path.join(processed_path, f)
+            for f in os.listdir(processed_path)
+            if f.endswith('.txt') and f != 'skipped_files.txt'
+        ]
+        skip_patterns = [p.strip().lower() for p in os.getenv('SKIP_FILENAME_PATTERNS', 'anexo,formulario,propuesta,simulacion').split(',') if p.strip()]
+        tech_keywords = [kw.strip().lower() for kw in os.getenv(
+            'TECH_FILENAME_KEYWORDS',
+            'procesador,cpu,ram,memoria,ssd,hdd,disco,pantalla,monitor,display,'
+            'intel,amd,nvidia,gpu,ficha,especificacion,tecnica,tecnico,almacenamiento,bateria,ghz'
+        ).split(',') if kw.strip()]
+
+        def _is_admin(fname):
+            f = fname.lower()
+            return any(p in f for p in skip_patterns) and not any(kw in f for kw in tech_keywords)
+
+        txt_files = [f for f in all_txt_files if not _is_admin(os.path.basename(f))] or all_txt_files
+        metadatas = [{"codigo_cotizacion": state['codigo_cotizacion'], "rut_proveedor": state['rut_proveedor'], "source_file": os.path.basename(f)} for f in txt_files]
+        chunk_size = int(os.getenv('ADJUNTOS_CHUNK_SIZE', '500'))
+        chunk_overlap = int(os.getenv('ADJUNTOS_CHUNK_OVERLAP', '100'))
+        vectorstore_shared = create_faiss_from_files(txt_files, metadatas, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        state['adjuntos_vectorstore'] = vectorstore_shared
+        state = add_tiempo(state, _NODO, "crear_faiss_compartido",
+                           f"Crear FAISS compartido nodo_3+nodo_4 ({len(txt_files)} archivos, chunk={chunk_size})",
+                           time.time() - t0)
+        logging.info(f"✓ FAISS compartido creado y guardado en estado")
+
+        # Sub-fases 3d..3f: dentro de catalogar_producto (reutiliza el FAISS ya creado)
         tiempos_locales = state.get('tiempos', [])
         resultado = catalogador.catalogar_producto(
             payload=state['payload'],
@@ -299,6 +329,7 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             use_diccionarios=False,
             tiempos=tiempos_locales,
             nodo_nombre=_NODO,
+            vectorstore=vectorstore_shared,
         )
         # tiempos_locales fue mutado in-place por catalogar_producto
         state['tiempos'] = tiempos_locales
@@ -377,6 +408,8 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
             resultado_adjuntos=resultado_previo,
             tiempos=tiempos_locales,
             nodo_nombre=_NODO,
+            similarity_threshold=state.get('diccionario_similarity_threshold', 0.85),
+            llm_fallback=state.get('diccionario_llm_fallback', True),
         )
         state['tiempos'] = tiempos_locales
 
@@ -582,7 +615,8 @@ def _extraer_campo_individual(
     llm_provider: str,
     k: int = 5,
     max_retries: int = 3,
-    initial_delay: float = 2.0
+    initial_delay: float = 2.0,
+    contexto_extra: str = "",
 ) -> Dict[str, str]:
     """
     Extrae un campo individual usando RAG con retry automático.
@@ -693,6 +727,8 @@ def _extraer_campo_individual(
         instrucciones_especificas.append("- Extrae el valor exacto tal como aparece en el contexto")
 
     # Construir sección de instrucciones específicas
+    if contexto_extra:
+        instrucciones_especificas.append(f"- CONTEXTO ADICIONAL: {contexto_extra}")
     instrucciones_texto = "\n".join(instrucciones_especificas) if instrucciones_especificas else "- Extrae el valor exacto y limpio"
 
     # Construir prompt genérico y adaptativo
@@ -801,14 +837,19 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
     _NODO = "nodo_4_campos_manuales"
     t_nodo = time.time()
 
-    campos_manuales = state.get('campos_manuales_lista', [])
+    # Normalizar: acepta List[str] o List[Dict{campo, contexto}]
+    raw_lista = state.get('campos_manuales_lista') or []
+    campos_manuales = [
+        item if isinstance(item, dict) else {"campo": item, "contexto": ""}
+        for item in raw_lista
+    ]
 
     if not campos_manuales:
         logging.info("⊘ No hay campos manuales para extraer")
         state['resultado_campos_manuales'] = {}
         return state
 
-    logging.info(f"Campos a extraer: {campos_manuales}")
+    logging.info(f"Campos a extraer: {[c['campo'] for c in campos_manuales]}")
 
     try:
         processed_path = state.get('processed_path')
@@ -830,29 +871,36 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             logging.error(error_msg)
             return state
 
-        # Sub-fase 4a: crear FAISS para campos manuales
+        # Sub-fase 4a: reutilizar FAISS de nodo_3 si está disponible, si no crear uno nuevo
         t0 = time.time()
-        logging.info(f"Creando FAISS en memoria con {len(txt_files)} archivos...")
-        metadatas = [
-            {
-                "codigo_cotizacion": state['codigo_cotizacion'],
-                "rut_proveedor": state['rut_proveedor'],
-                "source_file": os.path.basename(f)
-            }
-            for f in txt_files
-        ]
-        chunk_size = int(os.getenv('CAMPOS_MANUALES_CHUNK_SIZE', '200'))
-        chunk_overlap = int(os.getenv('CAMPOS_MANUALES_CHUNK_OVERLAP', '50'))
-        logging.info(f"Creando FAISS con chunks de {chunk_size} caracteres (overlap: {chunk_overlap})...")
-        vectorstore = create_faiss_from_files(
-            txt_files, metadatas,
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap
-        )
-        state = add_tiempo(state, _NODO, "crear_faiss",
-                           f"Crear FAISS para campos manuales ({len(txt_files)} archivos,"
-                           f" chunk={chunk_size})",
-                           time.time() - t0)
-        logging.info(f"✓ FAISS creado con chunking optimizado para campos manuales")
+        vectorstore = state.get('adjuntos_vectorstore')
+        if vectorstore is not None:
+            logging.info(f"✓ Reutilizando FAISS compartido de nodo_3 (sin costo de embedding)")
+            state = add_tiempo(state, _NODO, "reuso_faiss",
+                               f"Reutilizar FAISS compartido de nodo_3 ({len(txt_files)} archivos)",
+                               time.time() - t0)
+        else:
+            logging.info(f"Creando FAISS en memoria con {len(txt_files)} archivos...")
+            metadatas = [
+                {
+                    "codigo_cotizacion": state['codigo_cotizacion'],
+                    "rut_proveedor": state['rut_proveedor'],
+                    "source_file": os.path.basename(f)
+                }
+                for f in txt_files
+            ]
+            chunk_size = int(os.getenv('CAMPOS_MANUALES_CHUNK_SIZE', '200'))
+            chunk_overlap = int(os.getenv('CAMPOS_MANUALES_CHUNK_OVERLAP', '50'))
+            logging.info(f"Creando FAISS con chunks de {chunk_size} caracteres (overlap: {chunk_overlap})...")
+            vectorstore = create_faiss_from_files(
+                txt_files, metadatas,
+                chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            )
+            state = add_tiempo(state, _NODO, "crear_faiss",
+                               f"Crear FAISS para campos manuales ({len(txt_files)} archivos,"
+                               f" chunk={chunk_size})",
+                               time.time() - t0)
+            logging.info(f"✓ FAISS creado con chunking optimizado para campos manuales")
 
         # Sub-fase 4b: extracción paralela
         t0 = time.time()
@@ -866,7 +914,9 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
         resultados = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for i, campo in enumerate(campos_manuales):
+            for item in campos_manuales:
+                campo = item["campo"]
+                contexto_extra = item.get("contexto", "")
                 max_retries = int(os.getenv('CAMPOS_MANUALES_MAX_RETRIES', '3'))
                 initial_delay = float(os.getenv('CAMPOS_MANUALES_INITIAL_DELAY', '2.0'))
                 # Procesador necesita más documentos de referencia para localizar el modelo exacto
@@ -875,7 +925,7 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
                 future = executor.submit(
                     _extraer_campo_individual,
                     campo, vectorstore, payload, llm_provider,
-                    k_campo, max_retries, initial_delay
+                    k_campo, max_retries, initial_delay, contexto_extra
                 )
                 futures[future] = campo
 

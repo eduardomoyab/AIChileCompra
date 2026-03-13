@@ -8,6 +8,7 @@ import re
 import unicodedata
 import pandas as pd
 from typing import Dict, List, Any, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pydantic import BaseModel, Field, ValidationError
 from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
@@ -33,7 +34,6 @@ logging.basicConfig(
 # Rutas de configuración
 AGENTS_PATH = os.path.dirname(os.path.abspath(__file__))
 PATH_RAG_ADJ = os.path.join(AGENTS_PATH, "RAG_adjuntos_comp.yaml")
-PATH_RAG_DIC = os.path.join(AGENTS_PATH, "RAG_diccionario_comp.yaml")
 PATH_CONFIG = os.path.join(AGENTS_PATH, "config_comp.yaml")
 PATH_DICT_PROCESADOR = "diccionarios/Computadores/diccionario_procesador.xlsx"
 
@@ -65,7 +65,6 @@ class CatalogacionComputadores:
 
     def __init__(self,
                  path_rag_adj: str = PATH_RAG_ADJ,
-                 path_rag_dic: str = PATH_RAG_DIC,
                  path_config: str = PATH_CONFIG,
                  llm_provider: str = None):
         """
@@ -73,13 +72,11 @@ class CatalogacionComputadores:
 
         Args:
             path_rag_adj: Ruta al template de RAG para adjuntos
-            path_rag_dic: Ruta al template de RAG para diccionarios
             path_config: Ruta al archivo de configuración
             llm_provider: Proveedor de LLM ('openai', 'gemini', 'deepseek').
                          Si es None, usa DEFAULT_LLM_PROVIDER del .env
         """
         self.path_rag_adj = path_rag_adj
-        self.path_rag_dic = path_rag_dic
         self.path_config = path_config
 
         # Cargar configuraciones
@@ -91,7 +88,6 @@ class CatalogacionComputadores:
 
         self.llm_provider = llm_provider.lower()
         self.llm = None  # LLM para extracción de adjuntos
-        self.llm_dic = None  # LLM para normalización con diccionarios
 
         # Cargar diccionario de procesadores
         self._load_processor_dict()
@@ -100,12 +96,6 @@ class CatalogacionComputadores:
         """Carga las configuraciones desde archivos YAML"""
         with open(self.path_rag_adj, 'r', encoding='utf-8') as f:
             self.config_rag_adj = yaml.safe_load(f)
-
-        with open(self.path_rag_dic, 'r', encoding='utf-8') as f:
-            self.config_rag_dic = yaml.safe_load(f)
-
-        with open(self.path_config, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
 
         logging.info("Configuraciones cargadas exitosamente")
 
@@ -154,12 +144,6 @@ class CatalogacionComputadores:
             self.llm = get_llm(self.llm_provider, temperature=temp)
             logging.info(f"LLM (adjuntos) inicializado: {self.llm_provider} (temp={temp})")
 
-        if self.llm_dic is None:
-            # Leer temperatura desde .env para diccionarios
-            temp_dic = float(os.getenv('TEMPERATURE_DICCIONARIOS', '0.3'))
-            self.llm_dic = get_llm(self.llm_provider, temperature=temp_dic)
-            logging.info(f"LLM (diccionarios) inicializado: {self.llm_provider} (temp={temp_dic})")
-
     def format_docs(self, docs):
         """Formatea documentos para el contexto RAG"""
         return "\n\n".join(doc.page_content for doc in docs)
@@ -188,6 +172,7 @@ class CatalogacionComputadores:
         calcular_tokens: bool = False,
         tiempos: list = None,
         nodo_nombre: str = "nodo_3_rag_adjuntos",
+        vectorstore=None,
     ) -> Dict[str, Any]:
         """
         Cataloga un producto individual de computación.
@@ -236,74 +221,77 @@ class CatalogacionComputadores:
         # PASO 1: RAG con adjuntos procesados
         logging.info(f"[PASO 1/1] Extrayendo atributos desde adjuntos (ROWNUM: {payload.get('ROWNUM')})")
 
-        # Sub-paso: filtrar archivos admin
-        t0 = time.time()
-        all_txt_files = [
-            os.path.join(processed_path, f)
-            for f in os.listdir(processed_path)
-            if f.endswith('.txt') and f != 'skipped_files.txt'
-        ]
-        skip_patterns_raw = os.getenv('SKIP_FILENAME_PATTERNS', 'anexo,formulario,propuesta,simulacion')
-        skip_patterns = [p.strip().lower() for p in skip_patterns_raw.split(',') if p.strip()]
-        tech_keywords_raw = os.getenv(
-            'TECH_FILENAME_KEYWORDS',
-            'procesador,cpu,ram,memoria,ssd,hdd,disco,pantalla,monitor,display,'
-            'intel,amd,nvidia,gpu,ficha,especificacion,tecnica,tecnico,'
-            'almacenamiento,bateria,ghz'
-        )
-        tech_keywords = [kw.strip().lower() for kw in tech_keywords_raw.split(',') if kw.strip()]
-
-        def _is_admin_file(filename: str) -> bool:
-            fname = filename.lower()
-            has_admin = any(p in fname for p in skip_patterns)
-            if not has_admin:
-                return False
-            has_tech = any(kw in fname for kw in tech_keywords)
-            return not has_tech
-
-        txt_files_filtered = [f for f in all_txt_files if not _is_admin_file(os.path.basename(f))]
-        if txt_files_filtered:
-            excluded = len(all_txt_files) - len(txt_files_filtered)
-            if excluded > 0:
-                logging.info(f"Filtrado admin: {len(all_txt_files)} → {len(txt_files_filtered)} archivos ({excluded} excluidos)")
-            txt_files = txt_files_filtered
-        else:
-            logging.warning("SKIP_FILENAME_PATTERNS excluyó todos los archivos — usando todos sin filtro")
-            txt_files = all_txt_files
-        _t("filtrar_archivos",
-           f"Filtrar archivos admin ({len(all_txt_files)} total → {len(txt_files)} válidos)",
-           time.time() - t0)
-
-        if not txt_files:
-            logging.warning(f"No se encontraron archivos procesados en {processed_path}")
-            return self._create_empty_result(payload.get('ROWNUM'))
-
-        # Sub-paso: crear FAISS
-        t0 = time.time()
-        logging.info(f"Creando FAISS en memoria con {len(txt_files)} archivos...")
-        metadatas = [
-            {
-                "codigo_cotizacion": codigo_cotizacion,
-                "rut_proveedor": rut_proveedor,
-                "source_file": os.path.basename(f)
-            }
-            for f in txt_files
-        ]
-        try:
-            chunk_size = int(os.getenv('ADJUNTOS_CHUNK_SIZE', '500'))
-            chunk_overlap = int(os.getenv('ADJUNTOS_CHUNK_OVERLAP', '100'))
-            logging.info(f"Creando FAISS con chunks de {chunk_size} caracteres (overlap: {chunk_overlap})...")
-            vectorstore = create_faiss_from_files(
-                txt_files, metadatas,
-                chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        if vectorstore is None:
+            # Sub-paso: filtrar archivos admin
+            t0 = time.time()
+            all_txt_files = [
+                os.path.join(processed_path, f)
+                for f in os.listdir(processed_path)
+                if f.endswith('.txt') and f != 'skipped_files.txt'
+            ]
+            skip_patterns_raw = os.getenv('SKIP_FILENAME_PATTERNS', 'anexo,formulario,propuesta,simulacion')
+            skip_patterns = [p.strip().lower() for p in skip_patterns_raw.split(',') if p.strip()]
+            tech_keywords_raw = os.getenv(
+                'TECH_FILENAME_KEYWORDS',
+                'procesador,cpu,ram,memoria,ssd,hdd,disco,pantalla,monitor,display,'
+                'intel,amd,nvidia,gpu,ficha,especificacion,tecnica,tecnico,'
+                'almacenamiento,bateria,ghz'
             )
-            logging.info(f"✓ FAISS creado con chunking para extracción de atributos fijos")
-        except Exception as e:
-            logging.error(f"Error creando FAISS: {e}")
-            return self._create_empty_result(payload.get('ROWNUM'))
-        _t("crear_faiss",
-           f"Crear FAISS adjuntos ({len(txt_files)} archivos, chunk={chunk_size})",
-           time.time() - t0)
+            tech_keywords = [kw.strip().lower() for kw in tech_keywords_raw.split(',') if kw.strip()]
+
+            def _is_admin_file(filename: str) -> bool:
+                fname = filename.lower()
+                has_admin = any(p in fname for p in skip_patterns)
+                if not has_admin:
+                    return False
+                has_tech = any(kw in fname for kw in tech_keywords)
+                return not has_tech
+
+            txt_files_filtered = [f for f in all_txt_files if not _is_admin_file(os.path.basename(f))]
+            if txt_files_filtered:
+                excluded = len(all_txt_files) - len(txt_files_filtered)
+                if excluded > 0:
+                    logging.info(f"Filtrado admin: {len(all_txt_files)} → {len(txt_files_filtered)} archivos ({excluded} excluidos)")
+                txt_files = txt_files_filtered
+            else:
+                logging.warning("SKIP_FILENAME_PATTERNS excluyó todos los archivos — usando todos sin filtro")
+                txt_files = all_txt_files
+            _t("filtrar_archivos",
+               f"Filtrar archivos admin ({len(all_txt_files)} total → {len(txt_files)} válidos)",
+               time.time() - t0)
+
+            if not txt_files:
+                logging.warning(f"No se encontraron archivos procesados en {processed_path}")
+                return self._create_empty_result(payload.get('ROWNUM'))
+
+            # Sub-paso: crear FAISS
+            t0 = time.time()
+            logging.info(f"Creando FAISS en memoria con {len(txt_files)} archivos...")
+            metadatas = [
+                {
+                    "codigo_cotizacion": codigo_cotizacion,
+                    "rut_proveedor": rut_proveedor,
+                    "source_file": os.path.basename(f)
+                }
+                for f in txt_files
+            ]
+            try:
+                chunk_size = int(os.getenv('ADJUNTOS_CHUNK_SIZE', '500'))
+                chunk_overlap = int(os.getenv('ADJUNTOS_CHUNK_OVERLAP', '100'))
+                logging.info(f"Creando FAISS con chunks de {chunk_size} caracteres (overlap: {chunk_overlap})...")
+                vectorstore = create_faiss_from_files(
+                    txt_files, metadatas,
+                    chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                )
+                logging.info(f"✓ FAISS creado con chunking para extracción de atributos fijos")
+            except Exception as e:
+                logging.error(f"Error creando FAISS: {e}")
+                return self._create_empty_result(payload.get('ROWNUM'))
+            _t("crear_faiss",
+               f"Crear FAISS adjuntos ({len(txt_files)} archivos, chunk={chunk_size})",
+               time.time() - t0)
+        else:
+            logging.info("✓ Reutilizando FAISS pre-construido (nodo_3)")
 
         # Sub-paso: retrieval (similarity search)
         t0 = time.time()
@@ -451,36 +439,6 @@ class CatalogacionComputadores:
             logging.error(f"Respuesta recibida: {response}")
             return None
 
-    def _parse_response_diccionario(self, response: str) -> Optional[Dict[str, Any]]:
-        """Parsea la respuesta del RAG de diccionarios (formato JSON)"""
-        try:
-            # Limpiar respuesta
-            response = response.replace('```json', '').replace('```', '')
-            response = response.replace('null', '"No disponible"')
-            response = response.strip()
-
-            # Parsear JSON
-            data = json.loads(response)
-
-            if isinstance(data, list) and len(data) > 0:
-                return data[0]
-            elif isinstance(data, dict):
-                return data
-            else:
-                return None
-
-        except Exception as e:
-            logging.error(f"Error parseando respuesta de diccionario: {e}")
-            return None
-
-    def _format_producto_for_normalizacion(self, producto: Dict[str, Any]) -> str:
-        """Formatea el producto para el prompt de normalización"""
-        texto = f"Producto {producto.get('ROWNUM', 'N/A')}:\n"
-        for key, value in producto.items():
-            if key != 'ROWNUM':
-                texto += f"  - {key}: {value}\n"
-        return texto.strip()
-
     def _complete_processor_specs(self, resultado: Dict[str, Any]) -> Dict[str, Any]:
         """
         Completa núcleos e hilos basándose en el procesador usando diccionario.
@@ -528,18 +486,24 @@ class CatalogacionComputadores:
         resultado_adjuntos: Dict[str, Any],
         tiempos: list = None,
         nodo_nombre: str = "nodo_5_rag_diccionarios",
+        similarity_threshold: float = 0.85,
+        llm_fallback: bool = True,
     ) -> Dict[str, Any]:
         """
-        Completa especificaciones desde diccionario usando RAG con FAISS + Excel lookup.
+        Normaliza campos usando similitud de embeddings por campo + LLM fallback opcional.
 
-        PASO 2: Normalización RAG con FAISS (búsqueda en diccionarios Features y Procesador)
-        PASO 3: Completar núcleos/hilos desde diccionario Excel (lookup directo)
+        Para cada campo presente en diccionario_features.xlsx:
+          1. Busca el valor más similar en el FAISS de ese campo (k=3)
+          2. Si score >= threshold: usa el valor normalizado automáticamente
+          3. Si score < threshold y llm_fallback=True: pregunta al LLM con top-3 candidatos
+          4. Si LLM no confirma ninguno: deja el valor original
+
+        Tras normalizar, completa Nucleos/Hilos si el procesador está en el diccionario.
 
         Args:
-            resultado_adjuntos: Resultado previo obtenido del RAG de adjuntos + campos manuales
-
-        Returns:
-            dict: Resultado normalizado y con núcleos/hilos completados
+            resultado_adjuntos: Resultado previo (adjuntos + campos manuales mezclados)
+            similarity_threshold: Score mínimo para aceptar match automático (0-1)
+            llm_fallback: Si usar LLM cuando el score no alcanza el threshold
         """
         self._initialize_llms()
 
@@ -552,71 +516,123 @@ class CatalogacionComputadores:
                     "segundos": round(segundos, 4),
                 })
 
-        # PASO 2: Normalización RAG con diccionarios FAISS
-        logging.info(f"[PASO 2/3] Normalizando con diccionarios FAISS (ROWNUM: {resultado_adjuntos.get('ROWNUM')})")
+        from agents.retriever_diccionario_comp import (
+            normalizar_con_features,
+            get_campos_en_features,
+            get_nucleos_hilos,
+        )
 
-        from agents.retriever_diccionario_comp import search_diccionario_balanced, format_docs_for_llm
+        NO_DISP = {"no disponible", "no especificado", ""}
+        campos_en_features = get_campos_en_features()
+        resultado_final = dict(resultado_adjuntos)
 
-        query_parts = []
-        for key in ['Tipo', 'Modelo', 'Procesador', 'Marca', 'Tipo RAM', 'Tipo Almacenamiento', 'Sistema Operativo']:
-            value = resultado_adjuntos.get(key)
-            if value and value not in ('No disponible', 'No especificado'):
-                query_parts.append(f"{key}: {value}")
+        logging.info(
+            f"[PASO 2/3] Normalizando con features por campo "
+            f"(threshold={similarity_threshold}, llm_fallback={llm_fallback}, "
+            f"ROWNUM: {resultado_adjuntos.get('ROWNUM')})"
+        )
 
-        if query_parts:
-            query = " | ".join(query_parts)
-            try:
-                # Sub-paso: búsqueda en diccionario FAISS
-                t0 = time.time()
-                docs_dict = search_diccionario_balanced(query, k_total=2)
-                _t("search_diccionario",
-                   f"Búsqueda FAISS diccionario (docs={len(docs_dict) if docs_dict else 0})",
-                   time.time() - t0)
+        t0_total = time.time()
+        campos_normalizados = 0
 
-                if docs_dict:
-                    contexto_dict = format_docs_for_llm(docs_dict)
-                    prompt_template = self.config_rag_dic['prompt_rag_diccionarios']
-                    prompt = PromptTemplate.from_template(prompt_template)
+        # Recolectar campos con valor válido para normalizar
+        campos_a_normalizar = {
+            campo: resultado_final[campo]
+            for campo in campos_en_features
+            if resultado_final.get(campo) and str(resultado_final[campo]).lower().strip() not in NO_DISP
+        }
 
-                    # Sub-paso: LLM normalización
-                    t0 = time.time()
-                    chain = prompt | self.llm
-                    response = chain.invoke({
-                        "contexto_diccionario": contexto_dict,
-                        "resultado_actual": json.dumps(resultado_adjuntos, ensure_ascii=False, indent=2)
-                    })
-                    _t("llm_normalizacion",
-                       f"Llamada LLM ({self.llm_provider}) para normalización con diccionario",
-                       time.time() - t0)
-
-                    resultado_normalizado = self._parse_response_diccionario(response.content)
-                    if resultado_normalizado and isinstance(resultado_normalizado, dict):
-                        logging.info(f"  ✓ Normalización RAG completada")
-                        resultado_final = resultado_normalizado
-                    else:
-                        logging.warning(f"  Normalización RAG devolvió formato inesperado, usando resultado previo")
-                        resultado_final = resultado_adjuntos
+        def _worker(campo, valor_actual):
+            """Normaliza un campo de forma independiente (ejecutado en paralelo)."""
+            t0 = time.time()
+            valor_norm, score, candidatos = normalizar_con_features(
+                campo, str(valor_actual), k=3, threshold=similarity_threshold
+            )
+            if score >= similarity_threshold:
+                return campo, valor_norm, [(f"sim_{campo}", f"Similitud automática '{campo}' (score={score:.3f})", time.time() - t0)]
+            elif llm_fallback and candidatos:
+                t0_llm = time.time()
+                valor_llm = self._llm_resolver_match(campo, valor_actual, candidatos)
+                elapsed_llm = time.time() - t0_llm
+                timing = [(f"llm_fallback_{campo}", f"LLM fallback '{campo}' (best_score={score:.3f})", elapsed_llm)]
+                if valor_llm:
+                    logging.info(f"  [LLM fallback] '{campo}': '{valor_actual}' → '{valor_llm}'")
+                    return campo, valor_llm, timing
                 else:
-                    logging.info(f"  No se encontraron docs en diccionario, usando resultado previo")
-                    resultado_final = resultado_adjuntos
+                    logging.info(f"  [LLM fallback] '{campo}': sin match para '{valor_actual}' (best_score={score:.3f})")
+                    return campo, None, timing  # registrar el intento aunque no haya match
+            return campo, None, []
 
-            except Exception as e:
-                logging.warning(f"  Error en normalización RAG: {e}, usando resultado previo")
-                resultado_final = resultado_adjuntos
-        else:
-            logging.info(f"  No hay suficiente info para query, saltando normalización RAG")
-            resultado_final = resultado_adjuntos
+        max_workers = min(len(campos_a_normalizar), 5) or 1
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_worker, campo, valor): campo
+                for campo, valor in campos_a_normalizar.items()
+            }
+            for future in as_completed(futures):
+                campo, nuevo_valor, timings = future.result()
+                for fase, desc, seg in timings:
+                    _t(fase, desc, seg)
+                if nuevo_valor is not None:
+                    resultado_final[campo] = nuevo_valor
+                    campos_normalizados += 1
 
-        # PASO 3: Completar núcleos e hilos desde diccionario Excel
-        logging.info(f"[PASO 3/3] Completando núcleos e hilos desde Excel (ROWNUM: {resultado_adjuntos.get('ROWNUM')})")
+        _t("normalizacion_total",
+           f"Normalización features por campo ({campos_normalizados} campos normalizados)",
+           time.time() - t0_total)
+        logging.info(f"  ✓ Normalización completada: {campos_normalizados}/{len(campos_en_features)} campos")
+
+        # PASO 3: Completar Nucleos/Hilos desde diccionario de procesadores
+        logging.info(f"[PASO 3/3] Completando núcleos e hilos (ROWNUM: {resultado_adjuntos.get('ROWNUM')})")
         t0 = time.time()
         resultado_final = self._complete_processor_specs(resultado_final)
-        _t("lookup_excel",
+        _t("lookup_nucleos_hilos",
            "Completar Nucleos/Hilos desde diccionario Excel (lookup directo)",
            time.time() - t0)
 
-        logging.info(f"✓ Diccionarios aplicados (RAG + Excel) para ROWNUM {resultado_adjuntos.get('ROWNUM')}")
+        logging.info(f"✓ Diccionarios aplicados para ROWNUM {resultado_adjuntos.get('ROWNUM')}")
         return resultado_final
+
+    def _llm_resolver_match(
+        self,
+        campo: str,
+        valor_extraido: str,
+        candidatos: list,
+    ) -> Optional[str]:
+        """
+        Usa el LLM para decidir si alguno de los candidatos es el mismo concepto
+        que el valor extraído. Retorna el candidato exacto o None si ninguno matchea.
+        """
+        if not candidatos:
+            return None
+
+        lineas = "\n".join(
+            f"{i+1}. {v} (similitud: {s:.2f})"
+            for i, (v, s) in enumerate(candidatos)
+        )
+        prompt = (
+            f"Se extrajo el valor \"{valor_extraido}\" para el campo \"{campo}\".\n\n"
+            f"Candidatos del diccionario (por similitud descendente):\n{lineas}\n\n"
+            f"¿Alguno de estos candidatos es el mismo producto/versión base que \"{valor_extraido}\"?\n"
+            f"Criterio: acepta si el candidato es la versión estándar del mismo producto "
+            f"(ej: 'Windows 11 Home Single Language' → 'Microsoft Windows 11 Home', "
+            f"'Win 11 Pro' → 'Microsoft Windows 11 Pro', 'macOS Sonoma' → 'macOS').\n"
+            f"Responde ÚNICAMENTE con el texto exacto del candidato si hay match, "
+            f"o con la palabra \"ninguno\" si ninguno corresponde."
+        )
+        try:
+            response = self.llm.invoke(prompt)
+            respuesta = response.content.strip()
+            valores_validos = [v for v, _ in candidatos]
+            if respuesta in valores_validos:
+                return respuesta
+            # Tolerar respuesta en minúsculas
+            for v in valores_validos:
+                if v.lower() == respuesta.lower():
+                    return v
+        except Exception as e:
+            logging.warning(f"  LLM fallback error para '{campo}': {e}")
+        return None
 
     def _create_empty_result(self, rownum: str) -> Dict[str, Any]:
         """Crea un resultado vacío con todos los campos en 'No disponible'"""

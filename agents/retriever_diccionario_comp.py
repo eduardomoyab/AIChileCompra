@@ -24,10 +24,15 @@ logging.basicConfig(
 # Constantes
 DICCIONARIOS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diccionarios", "Computadores")
 FEATURES_PATH = os.path.join(DICCIONARIOS_PATH, "diccionario_features.docx")
+FEATURES_XLSX_PATH = os.path.join(DICCIONARIOS_PATH, "diccionario_features.xlsx")
 PROCESADOR_PATH = os.path.join(DICCIONARIOS_PATH, "diccionario_procesador.xlsx")
 
 # Cache global para vector stores (se cargan una vez por sesión)
 _vectorstore_cache = {}
+
+# Cache per-campo para el nuevo sistema de normalización por similitud
+_features_vs_cache: Dict[str, any] = {}   # campo → FAISS vectorstore
+_procesador_df_cache: Optional[pd.DataFrame] = None  # para lookup rápido nucleos/hilos
 
 
 def _load_features_dict() -> tuple[List[str], List[Dict]]:
@@ -318,6 +323,158 @@ def format_docs_for_llm(docs: List[Document]) -> str:
         )
 
     return "\n\n".join(formatted_parts)
+
+
+# ========== NUEVO SISTEMA: NORMALIZACIÓN POR CAMPO VÍA SIMILITUD ==========
+
+def warm_features_vectorstores() -> None:
+    """
+    Pre-carga en cache un FAISS por cada Campo Manual en diccionario_features.xlsx.
+    También pre-carga el DataFrame de procesadores para lookup de Nucleos/Hilos.
+    Se llama una vez en startup.
+    """
+    global _procesador_df_cache
+
+    if not os.path.exists(FEATURES_XLSX_PATH):
+        logging.warning(f"No se encontró {FEATURES_XLSX_PATH}, saltando pre-carga de features")
+        return
+
+    import os as _os
+    api_key = _os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logging.warning("OPENAI_API_KEY no configurada, no se puede pre-cargar features FAISS")
+        return
+
+    from langchain_openai import OpenAIEmbeddings
+    from langchain_community.vectorstores import FAISS as FAISSStore
+    from langchain_core.documents import Document as LCDocument
+
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
+
+    df = pd.read_excel(FEATURES_XLSX_PATH)
+    campos = df['Campo Manual'].unique().tolist()
+
+    for campo in campos:
+        valores = df[df['Campo Manual'] == campo]['Texto'].dropna().tolist()
+        if not valores:
+            continue
+        try:
+            docs = [LCDocument(page_content=v, metadata={"campo": campo, "valor": v}) for v in valores]
+            vs = FAISSStore.from_documents(docs, embeddings)
+            _features_vs_cache[campo] = vs
+            logging.info(f"  ✓ FAISS features '{campo}': {len(valores)} valores")
+        except Exception as e:
+            logging.error(f"  ✗ Error cargando FAISS para campo '{campo}': {e}")
+
+    # Pre-cargar DataFrame procesadores para lookup O(1)
+    if os.path.exists(PROCESADOR_PATH):
+        _procesador_df_cache = pd.read_excel(PROCESADOR_PATH)
+        logging.info(f"  ✓ DataFrame procesadores cargado: {len(_procesador_df_cache)} filas")
+
+    logging.info(f"warm_features_vectorstores() completado — {len(_features_vs_cache)} campos cargados")
+
+
+def normalizar_con_features(
+    campo: str,
+    valor: str,
+    k: int = 3,
+    threshold: float = 0.85,
+) -> tuple:
+    """
+    Busca el valor normalizado más similar en el diccionario para un campo dado.
+
+    Args:
+        campo: Nombre del campo (debe existir en diccionario_features.xlsx)
+        valor: Valor extraído a normalizar
+        k: Top-k candidatos a recuperar
+        threshold: Score mínimo de relevancia para aceptar como match automático
+
+    Returns:
+        (valor_normalizado: str, score: float, candidatos: List[tuple])
+        - valor_normalizado: el mejor match si score >= threshold, si no el valor original
+        - score: score del mejor candidato (0-1)
+        - candidatos: lista de (valor_candidato, score) de top-k
+    """
+    vs = _features_vs_cache.get(campo)
+    if vs is None:
+        # Intentar cargar on-demand si el warmup no lo cargó
+        logging.warning(f"  ⚠ FAISS para '{campo}' no está en cache — intentando carga on-demand")
+        try:
+            import os as _os
+            api_key = _os.getenv("OPENAI_API_KEY")
+            if api_key and os.path.exists(FEATURES_XLSX_PATH):
+                from langchain_openai import OpenAIEmbeddings
+                from langchain_community.vectorstores import FAISS as FAISSStore
+                from langchain_core.documents import Document as LCDocument
+                embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
+                df = pd.read_excel(FEATURES_XLSX_PATH)
+                valores = df[df['Campo Manual'] == campo]['Texto'].dropna().tolist()
+                if valores:
+                    docs = [LCDocument(page_content=v, metadata={"campo": campo, "valor": v}) for v in valores]
+                    vs = FAISSStore.from_documents(docs, embeddings)
+                    _features_vs_cache[campo] = vs
+                    logging.info(f"  ✓ FAISS para '{campo}' cargado on-demand ({len(valores)} valores)")
+        except Exception as e:
+            logging.error(f"  ✗ No se pudo cargar on-demand FAISS para '{campo}': {e}")
+    if vs is None:
+        logging.error(f"  ✗ Sin FAISS para '{campo}', campo NO normalizado")
+        return valor, 0.0, []
+
+    try:
+        resultados = vs.similarity_search_with_relevance_scores(valor, k=k)
+    except Exception as e:
+        logging.warning(f"Error en similarity_search para campo '{campo}': {e}")
+        return valor, 0.0, []
+
+    if not resultados:
+        return valor, 0.0, []
+
+    candidatos = [(doc.metadata.get("valor", doc.page_content), score) for doc, score in resultados]
+    best_valor, best_score = candidatos[0]
+
+    if best_score >= threshold:
+        logging.info(f"  [Dict] '{campo}': '{valor}' → '{best_valor}' (score={best_score:.3f})")
+        return best_valor, best_score, candidatos
+    else:
+        logging.info(f"  [Dict] '{campo}': '{valor}' sin match automático (best score={best_score:.3f})")
+        return valor, best_score, candidatos
+
+
+def get_nucleos_hilos(procesador: str) -> Optional[Dict]:
+    """
+    Lookup directo de Nucleos e Hilos para un procesador dado.
+
+    Args:
+        procesador: Nombre exacto del procesador
+
+    Returns:
+        Dict con {"Nucleos": int, "Hilos": int} o None si no encontrado
+    """
+    if _procesador_df_cache is None:
+        return None
+
+    df = _procesador_df_cache
+    # Búsqueda exacta primero
+    row = df[df['Procesador'] == procesador]
+    if row.empty:
+        # Búsqueda case-insensitive
+        proc_lower = procesador.lower().strip()
+        row = df[df['Procesador'].str.lower().str.strip() == proc_lower]
+
+    if row.empty:
+        return None
+
+    nucleos = row.iloc[0].get('Nucleos')
+    hilos = row.iloc[0].get('Hilos')
+    return {
+        "Nucleos": str(int(nucleos)) if pd.notna(nucleos) else None,
+        "Hilos": str(int(hilos)) if pd.notna(hilos) else None,
+    }
+
+
+def get_campos_en_features() -> List[str]:
+    """Devuelve los campos disponibles en el diccionario de features (pre-cargados)."""
+    return list(_features_vs_cache.keys())
 
 
 # Script de prueba

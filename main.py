@@ -8,7 +8,7 @@ en licitaciones públicas usando LLM, RAG y LangGraph.
 import os
 import sys
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends, Header, status
@@ -126,6 +126,12 @@ class ProductoPayload(BaseModel):
         }
 
 
+class CampoManualItem(BaseModel):
+    """Campo manual con instrucciones opcionales para el agente de extracción"""
+    campo: str = Field(..., description="Nombre del campo a extraer (ej: 'Procesador')")
+    contexto: str = Field("", description="Instrucciones adicionales para el agente de este campo")
+
+
 class CatalogarRequest(BaseModel):
     """Modelo de request para catalogación de un producto (Compra Ágil)"""
 
@@ -134,7 +140,9 @@ class CatalogarRequest(BaseModel):
     rut_proveedor: str = Field(..., description="RUT del proveedor")
     use_diccionarios: bool = Field(False, description="Si usar normalización con diccionarios")
     llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
-    campos_manuales: Optional[List[str]] = Field(None, description="Lista de campos adicionales a extraer en paralelo (ej: ['pantalla', 'procesador'])")
+    campos_manuales: Optional[List[Union[str, CampoManualItem]]] = Field(None, description="Lista de campos a extraer. Puede ser strings simples o dicts con {campo, contexto}")
+    diccionario_similarity_threshold: float = Field(0.85, description="Score mínimo de similitud coseno para aceptar match del diccionario (0-1)")
+    diccionario_llm_fallback: bool = Field(True, description="Si no hay match sobre el threshold, usar LLM para decidir entre top-3 candidatos")
     token_bearer: Optional[str] = Field(None, description="Token Bearer de Mercado Público. Si se provee, usa la API autenticada (servicios-compra-agil) en lugar del Buscador público.")
 
 
@@ -299,6 +307,14 @@ async def catalogar_producto(request: CatalogarRequest,
         else:
             logging.info("Usando BuscadorAttachmentDownloader (API pública)")
 
+        # Normalizar campos_manuales: List[str | CampoManualItem] → List[Dict]
+        campos_manuales_norm = []
+        for item in (request.campos_manuales or []):
+            if isinstance(item, str):
+                campos_manuales_norm.append({"campo": item, "contexto": ""})
+            else:
+                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+
         # Ejecutar catalogación
         resultado_completo = extraer_atributos(
             payload=request.payload.dict(),
@@ -307,7 +323,9 @@ async def catalogar_producto(request: CatalogarRequest,
             use_diccionarios=request.use_diccionarios,
             llm_provider=request.llm_provider,
             downloader=downloader,
-            campos_manuales_lista=request.campos_manuales
+            campos_manuales_lista=campos_manuales_norm,
+            diccionario_similarity_threshold=request.diccionario_similarity_threshold,
+            diccionario_llm_fallback=request.diccionario_llm_fallback,
         )
 
         # Preparar response
@@ -506,13 +524,11 @@ async def startup_event():
     # Pre-calentar FAISS diccionario en background para eliminar el cold-start en nodo_5
     # El cache se vacía en cada arranque: la nueva estructura de secciones se carga correctamente
     try:
-        from agents.retriever_diccionario_comp import _vectorstore_cache, _get_or_create_vectorstore
-        _vectorstore_cache.clear()  # Asegurar que no haya cache desactualizado
-        _get_or_create_vectorstore('Features')
-        _get_or_create_vectorstore('Procesador')
-        logging.info("✓ FAISS diccionario pre-cargado en cache (Features + Procesador)")
+        from agents.retriever_diccionario_comp import warm_features_vectorstores
+        warm_features_vectorstores()
+        logging.info("✓ FAISS features pre-cargado en cache (por campo)")
     except Exception as e:
-        logging.warning(f"No se pudo pre-cargar FAISS diccionario: {e}")
+        logging.warning(f"No se pudo pre-cargar FAISS features: {e}")
 
     logging.info("API iniciada correctamente")
 
