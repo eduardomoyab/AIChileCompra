@@ -69,16 +69,35 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             state['rut_proveedor']
         )
 
+        # TTL en segundos: 0 = sin caché (siempre re-descarga), >0 = usar caché si archivos son frescos
+        cache_ttl = int(os.getenv('ATTACHMENTS_CACHE_TTL_SECONDS', '0'))
+
         def _check_cache(directory):
-            if os.path.exists(directory):
-                files = [f for f in os.listdir(directory)
-                         if os.path.isfile(os.path.join(directory, f))]
-                return len(files) > 0, files
-            return False, []
+            if not os.path.exists(directory):
+                return False, []
+            files = [f for f in os.listdir(directory)
+                     if os.path.isfile(os.path.join(directory, f))]
+            if not files:
+                return False, []
+            if cache_ttl <= 0:
+                # Sin caché: borrar y forzar re-descarga
+                shutil.rmtree(directory, ignore_errors=True)
+                logging.info(f"  Cache TTL=0 — directorio limpiado: {directory}")
+                return False, []
+            # Con TTL: verificar antigüedad del archivo más reciente
+            newest_mtime = max(
+                os.path.getmtime(os.path.join(directory, f)) for f in files
+            )
+            age = time.time() - newest_mtime
+            if age > cache_ttl:
+                shutil.rmtree(directory, ignore_errors=True)
+                logging.info(f"  Cache expirado ({age:.0f}s > TTL {cache_ttl}s) — directorio limpiado")
+                return False, []
+            return True, files
 
         cache_hit, existing_files = _check_cache(attachments_dir)
         state = add_tiempo(state, _NODO, "check_cache",
-                           f"Verificar caché local de adjuntos (hit={cache_hit})",
+                           f"Verificar caché local de adjuntos (hit={cache_hit}, ttl={cache_ttl}s)",
                            time.time() - t0)
 
         if cache_hit:
