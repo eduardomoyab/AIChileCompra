@@ -1,4 +1,6 @@
 import os
+import itertools
+import threading
 from typing import Optional
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -6,6 +8,23 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 #from langchain_deepseek import ChatDeepSeek
 # Cargar variables de entorno
 load_dotenv()
+
+# Round-robin entre OPENAI_API_KEY y OPENAI_API_KEY_2 (si existe)
+_openai_keys_lock = threading.Lock()
+_openai_keys_cycle: Optional[itertools.cycle] = None
+
+def _get_openai_key_roundrobin() -> str:
+    global _openai_keys_cycle
+    with _openai_keys_lock:
+        if _openai_keys_cycle is None:
+            keys = [k for k in [
+                os.getenv("OPENAI_API_KEY"),
+                os.getenv("OPENAI_API_KEY_2"),
+            ] if k]
+            if not keys:
+                raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
+            _openai_keys_cycle = itertools.cycle(keys)
+        return next(_openai_keys_cycle)
 
 
 def get_llm(model_provider: str = "openai", temperature: float = 0.0):
@@ -25,10 +44,7 @@ def get_llm(model_provider: str = "openai", temperature: float = 0.0):
     model_provider = model_provider.lower()
 
     if model_provider == "openai":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
-
+        api_key = _get_openai_key_roundrobin()
         model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
         return ChatOpenAI(
