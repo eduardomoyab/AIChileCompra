@@ -7,6 +7,7 @@ en licitaciones públicas usando LLM, RAG y LangGraph.
 
 import os
 import sys
+import json
 import logging
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
@@ -30,8 +31,20 @@ from token_utils.utils import TokenPayload
 # Cargar variables de entorno
 load_dotenv()
 
-# Token en memoria — persiste hasta reinicio del servidor o hasta nuevo /set-token
-_token_store: dict = {}
+# Token persistido en disco — compartido entre todos los workers de Gunicorn
+_TOKEN_FILE = os.path.join(os.getenv("ATTACHMENTS_OUTPUT_PATH", "attachments"), ".token_store.json")
+
+def _read_token() -> dict:
+    try:
+        with open(_TOKEN_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _write_token(data: dict):
+    os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
+    with open(_TOKEN_FILE, "w") as f:
+        json.dump(data, f)
 
 #set_langsmith()
 # Configuración de logging
@@ -296,8 +309,8 @@ async def catalogar_producto(request: CatalogarRequest,
     try:
         logging.info(f"Catalogando producto - Cotización: {request.codigo_cotizacion}, Proveedor: {request.rut_proveedor}")
 
-        # Seleccionar downloader: payload > token en memoria > sin token
-        token = request.token_bearer or _token_store.get("access_token")
+        # Seleccionar downloader: payload > token en disco > sin token
+        token = request.token_bearer or _read_token().get("access_token")
         downloader = None
         if token:
             from utils.get_attachments import TokenAttachmentDownloader
@@ -438,15 +451,15 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
 
 @app.post("/set-token")
 async def set_token(payload: TokenPayload, api_key: str = Depends(require_api_key)):
-    global _token_store
-    _token_store = payload.model_dump()
+    _write_token(payload.model_dump())
     return {"status": "ok"}
 
 @app.get("/get-token")
 async def get_token(api_key: str = Depends(require_api_key)):
-    if not _token_store:
+    data = _read_token()
+    if not data:
         raise HTTPException(status_code=404, detail="Token no disponible")
-    return _token_store
+    return data
 
 
 
