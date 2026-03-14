@@ -340,16 +340,27 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
 
         # Sub-fases 3d..3f: dentro de catalogar_producto (reutiliza el FAISS ya creado)
         tiempos_locales = state.get('tiempos', [])
-        resultado = catalogador.catalogar_producto(
-            payload=state['payload'],
-            codigo_cotizacion=state['codigo_cotizacion'],
-            rut_proveedor=state['rut_proveedor'],
-            processed_path=state['processed_path'],
-            use_diccionarios=False,
-            tiempos=tiempos_locales,
-            nodo_nombre=_NODO,
-            vectorstore=vectorstore_shared,
-        )
+        _max_reintentos_llm = 4
+        for _intento in range(_max_reintentos_llm):
+            try:
+                resultado = catalogador.catalogar_producto(
+                    payload=state['payload'],
+                    codigo_cotizacion=state['codigo_cotizacion'],
+                    rut_proveedor=state['rut_proveedor'],
+                    processed_path=state['processed_path'],
+                    use_diccionarios=False,
+                    tiempos=tiempos_locales,
+                    nodo_nombre=_NODO,
+                    vectorstore=vectorstore_shared,
+                )
+                break
+            except Exception as _e:
+                if ("429" in str(_e) or "rate_limit" in str(_e).lower()) and _intento < _max_reintentos_llm - 1:
+                    _wait = 2 ** _intento
+                    logging.warning(f"  429 en catalogar_producto — reintento {_intento+1}/{_max_reintentos_llm} en {_wait}s")
+                    time.sleep(_wait)
+                else:
+                    raise
         # tiempos_locales fue mutado in-place por catalogar_producto
         state['tiempos'] = tiempos_locales
 
@@ -1053,7 +1064,7 @@ def should_extract_campos_manuales(state: CatalogacionState) -> str:
     campos_manuales = state.get('campos_manuales_lista', [])
 
     # Verificar si el tipo de producto es "Otro"
-    resultado_adjuntos = state.get('resultado_adjuntos', {})
+    resultado_adjuntos = state.get('resultado_adjuntos') or {}
     tipo_producto = resultado_adjuntos.get('Tipo', '').strip()
 
     # Si el tipo es "Otro", saltar campos manuales Y diccionarios

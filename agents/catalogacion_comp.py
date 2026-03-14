@@ -620,18 +620,29 @@ class CatalogacionComputadores:
             f"Responde ÚNICAMENTE con el texto exacto del candidato si hay match, "
             f"o con la palabra \"ninguno\" si ninguno corresponde."
         )
-        try:
-            response = self.llm.invoke(prompt)
-            respuesta = response.content.strip()
-            valores_validos = [v for v, _ in candidatos]
-            if respuesta in valores_validos:
-                return respuesta
-            # Tolerar respuesta en minúsculas
-            for v in valores_validos:
-                if v.lower() == respuesta.lower():
-                    return v
-        except Exception as e:
-            logging.warning(f"  LLM fallback error para '{campo}': {e}")
+        max_intentos = 4
+        for intento in range(max_intentos):
+            try:
+                response = self.llm.invoke(prompt)
+                respuesta = response.content.strip()
+                valores_validos = [v for v, _ in candidatos]
+                if respuesta in valores_validos:
+                    return respuesta
+                # Tolerar respuesta en minúsculas
+                for v in valores_validos:
+                    if v.lower() == respuesta.lower():
+                        return v
+                return None
+            except Exception as e:
+                msg = str(e)
+                if "429" in msg or "rate_limit" in msg.lower():
+                    wait = 2 ** intento  # 1s, 2s, 4s, 8s
+                    logging.warning(f"  LLM 429 para '{campo}' — reintento {intento+1}/{max_intentos} en {wait}s")
+                    time.sleep(wait)
+                else:
+                    logging.warning(f"  LLM fallback error para '{campo}': {e}")
+                    return None
+        logging.warning(f"  LLM fallback '{campo}': agotados {max_intentos} reintentos por rate limit")
         return None
 
     def _create_empty_result(self, rownum: str) -> Dict[str, Any]:
