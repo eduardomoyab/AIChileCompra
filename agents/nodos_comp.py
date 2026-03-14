@@ -699,66 +699,10 @@ def _extraer_campo_individual(
         for i, doc in enumerate(retrieved_docs)
     ])
 
-    # Determinar instrucciones específicas según patrones en el nombre del campo
+    # Las instrucciones específicas vienen del contexto pasado por el llamador
     instrucciones_especificas = []
-
-    if "(gb)" in campo_lower or campo_lower.endswith(" gb"):
-        instrucciones_especificas.append("- Responde SOLO el número seguido de 'GB' (ej: '16 GB', '512 GB')")
-        instrucciones_especificas.append("- Si encuentras TB, conviértelo a GB (1 TB = 1000 GB)")
-    elif "(tb)" in campo_lower or campo_lower.endswith(" tb"):
-        instrucciones_especificas.append("- Responde SOLO el número seguido de 'TB' (ej: '1 TB', '2 TB')")
-    elif "(pulgada" in campo_lower or "(inch" in campo_lower:
-        instrucciones_especificas.append("- Responde SOLO el número, sin unidades (ej: '13.3', '15.6')")
-    elif "(mhz)" in campo_lower or "(ghz)" in campo_lower or "(w)" in campo_lower:
-        # Detectar cualquier unidad entre paréntesis
-        unit_match = re.search(r'\(([A-Za-z]+)\)', campo)
-        if unit_match:
-            unit = unit_match.group(1)
-            instrucciones_especificas.append(f"- Responde SOLO el número seguido de '{unit}' (ej: '3.5 {unit}')")
-    elif "tipo" in campo_lower:
-        instrucciones_especificas.append("- Responde SOLO el TIPO o tecnología, SIN capacidades ni números")
-        instrucciones_especificas.append("- Elimina cantidades como GB, TB, MHz, etc. de tu respuesta")
-        if "ram" in campo_lower:
-            instrucciones_especificas.append("- Ejemplo de respuesta correcta: 'DDR4', 'DDR5', 'LPDDR4', 'LPDDR4X', 'LPDDR5', 'LPDDR5X'")
-            instrucciones_especificas.append("- Para productos Apple con memoria unificada, responde 'Memoria Unificada'")
-            instrucciones_especificas.append("- CRÍTICO: Si el documento NO menciona explícitamente el tipo de RAM, responde 'No disponible'. NUNCA lo deduzcas de la capacidad (GB), del procesador ni del modelo.")
-            instrucciones_especificas.append("- Copia EXACTAMENTE la denominación con su sufijo: LPDDR4X ≠ LPDDR4, LPDDR5X ≠ LPDDR5. Si ves el sufijo X en el documento, inclúyelo.")
-        elif "almacenamiento" in campo_lower or "disco" in campo_lower:
-            instrucciones_especificas.append("- Ejemplo de respuesta correcta: 'SSD M.2', 'SSD NVMe', 'HDD SATA'")
-    elif any(kw in campo_lower for kw in ["nucleo", "hilo", "core", "thread"]):
-        instrucciones_especificas.append("- Responde SOLO el número (ej: '8', '16')")
-    elif any(kw in campo_lower for kw in ["marca", "fabricante", "manufacturer"]):
-        instrucciones_especificas.append("- Responde SOLO el nombre de la marca (ej: 'HP', 'Lenovo', 'Dell', 'Acer')")
-        instrucciones_especificas.append("- La marca puede aparecer explícita ('HP', 'Lenovo') o implícita en el nombre o número de modelo del producto")
-        instrucciones_especificas.append("- Usa tu conocimiento sobre computadores para inferir la marca a partir del nombre del modelo si no aparece escrita directamente")
-        instrucciones_especificas.append("- Si no hay información suficiente, responde 'No especificado'")
-    elif any(kw in campo_lower for kw in ["procesador", "cpu", "processor"]):
-        instrucciones_especificas.append("- Responde SOLO el nombre estándar del modelo de procesador (ej: 'AMD Ryzen 7 7735U', 'Intel Core i7-1355U', 'Apple M3')")
-        instrucciones_especificas.append("- Copia el número de modelo EXACTAMENTE: todos sus dígitos y letras (ej: '12450H', '1235U', '5700U'). NO aproximes ni sustituyas.")
-        instrucciones_especificas.append("- NO agregues información extra: velocidades de reloj (GHz/MHz), número de núcleos, generación en texto, ni descripciones adicionales")
-        instrucciones_especificas.append("- Formato correcto: 'Intel Core i7-1260P' (NO 'Intel Core i7-1260P de 12ª Generación' ni 'i7-1260P 2.1GHz 12-Core')")
-        instrucciones_especificas.append("- Incluye siempre la palabra 'Core' para Intel si corresponde (ej: 'Intel Core i5' no 'Intel i5')")
-        instrucciones_especificas.append("- Si el contexto menciona el procesador en varios formatos, elige la versión con el número de modelo más completo y específico (ej: 'Intel Core i7-1355U' sobre 'Intel Core i7 de 13ª Gen')")
-    elif "sistema operativo" in campo_lower or ("sistema" in campo_lower and "operativo" in campo_lower):
-        instrucciones_especificas.append("- Responde con el nombre EXACTO y COMPLETO del sistema operativo instalado (ej: 'Microsoft Windows 11 Pro', 'macOS', 'FreeDOS')")
-        instrucciones_especificas.append("- Selecciona UNA sola versión y edición específica — NO listes varias opciones ni combines múltiples")
-        instrucciones_especificas.append("- Si el documento menciona Windows, identifica: ¿versión 10 u 11? ¿edición Home, Pro, Enterprise, SE? Extrae lo que esté en las especificaciones del producto")
-        instrucciones_especificas.append("- Para productos Apple, responde 'macOS' salvo que indique versión específica (ej: 'macOS Ventura')")
-        instrucciones_especificas.append("- Para sistemas distintos de Windows o macOS (FreeDOS, Ubuntu, Chrome OS, Linux, etc.), extrae EXACTAMENTE lo que aparece en el documento")
-        instrucciones_especificas.append("- CRÍTICO: Si los documentos adjuntos NO mencionan ningún SO instalado, responde 'No especificado'. NUNCA asumas el SO por la marca, modelo o tipo de equipo.")
-    elif any(kw in campo_lower for kw in ["modelo", "model"]) and "procesador" not in campo_lower:
-        instrucciones_especificas.append("- Responde el modelo o nombre específico del producto")
-    elif "modalidad" in campo_lower:
-        instrucciones_especificas.append("- Busca si el contexto o las descripciones mencionan 'arriendo', 'arrendamiento' o 'leasing'")
-        instrucciones_especificas.append("- Si encuentras esas palabras, responde exactamente: 'Arriendo'")
-        instrucciones_especificas.append("- Si no se menciona ninguna modalidad o se habla de 'compra', 'adquisición' o 'compra ágil', responde exactamente: 'Compra'")
-        instrucciones_especificas.append("- Solo responde 'Arriendo' o 'Compra', nada más")
-    else:
-        instrucciones_especificas.append("- Extrae el valor exacto tal como aparece en el contexto")
-
-    # Construir sección de instrucciones específicas
     if contexto_extra:
-        instrucciones_especificas.append(f"- CONTEXTO ADICIONAL: {contexto_extra}")
+        instrucciones_especificas.append(f"- {contexto_extra}")
     instrucciones_texto = "\n".join(instrucciones_especificas) if instrucciones_especificas else "- Extrae el valor exacto y limpio"
 
     # Construir prompt genérico y adaptativo
