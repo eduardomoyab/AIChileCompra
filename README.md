@@ -74,14 +74,11 @@ Cataloga un producto de una **solicitud de cotización** (Compra Ágil). Descarg
   "rut_proveedor": "76292976-7",
   "use_diccionarios": true,
   "campos_manuales": [
-    { "campo": "Tipo", "contexto": "Responde SOLO una de estas opciones exactas: 'Laptop', 'Desktop', 'AIO', 'Otro'. 'Laptop' para notebooks/portátiles, 'Desktop' para PC de escritorio torres, 'AIO' para All-in-One, 'Otro' si no es ninguno de los anteriores." },
-    { "campo": "Part Number", "contexto": "Extrae el número de parte del fabricante (P/N, SKU, Código de Producto). Es un código alfanumérico único que identifica el modelo (ej: '15-EH1005LA', '82KT00GMUS'). NO es el número de serie ni el Asset Tag. Si no se encuentra, responde 'No disponible'." },
-    { "campo": "Modelo", "contexto": "Extrae el nombre completo del modelo del producto (ej: 'HP Pavilion 15-EH1005LA', 'Lenovo IdeaCentre AIO 3'). Si no se encuentra, responde 'No disponible'." },
     { "campo": "Procesador", "contexto": "Extrae el modelo exacto y completo. Si la ficha técnica y la descripción difieren, usa siempre la ficha." },
     { "campo": "Marca", "contexto": "Extrae solo el nombre de la marca fabricante." },
     { "campo": "Tipo RAM", "contexto": "Copia el sufijo exacto: LPDDR4X ≠ LPDDR4, LPDDR5X ≠ LPDDR5." },
     { "campo": "Tipo Almacenamiento", "contexto": "Solo el tipo, sin capacidad (ej: 'SSD', 'HDD', 'SSD/eMMC')." },
-    { "campo": "Sistema Operativo", "contexto": "Nombre completo del SO. Si no está mencionado explícitamente, responde 'No disponible'." },
+    { "campo": "Sistema Operativo", "contexto": "Nombre completo del SO. Si no está mencionado explícitamente, responde 'No especificado'." },
     { "campo": "RAM (GB)", "contexto": "Solo el número seguido de 'GB' (ej: '16 GB')." },
     { "campo": "Almacenamiento (GB)", "contexto": "Solo el número seguido de 'GB'. Convierte TB a GB si es necesario." },
     { "campo": "Pantalla (Pulgadas)", "contexto": "Solo el número en pulgadas, sin unidades (ej: '15.6')." },
@@ -173,18 +170,6 @@ Los campos marcados con ★ tienen diccionario de valores canónicos — si `use
 ```json
 "campos_manuales": [
   {
-    "campo": "Tipo",
-    "contexto": "Responde SOLO una de estas opciones exactas: 'Laptop', 'Desktop', 'AIO', 'Otro'. 'Laptop' para notebooks/portátiles, 'Desktop' para PC de escritorio torres, 'AIO' para All-in-One, 'Otro' si no es ninguno de los anteriores."
-  },
-  {
-    "campo": "Part Number",
-    "contexto": "Extrae el número de parte del fabricante (P/N, SKU, Código de Producto). Es un código alfanumérico único que identifica el modelo (ej: '15-EH1005LA', '82KT00GMUS'). NO es el número de serie ni el Asset Tag. Si no se encuentra, responde 'No disponible'."
-  },
-  {
-    "campo": "Modelo",
-    "contexto": "Extrae el nombre completo del modelo del producto (ej: 'HP Pavilion 15-EH1005LA', 'Lenovo IdeaCentre AIO 3'). Si no se encuentra, responde 'No disponible'."
-  },
-  {
     "campo": "Procesador",
     "contexto": "Extrae el modelo exacto y completo (ej: 'Intel Core i7-1355U', 'AMD Ryzen 7 7735U'). Si la ficha técnica y la descripción del proveedor difieren, usa siempre la ficha técnica."
   },
@@ -202,7 +187,7 @@ Los campos marcados con ★ tienen diccionario de valores canónicos — si `use
   },
   {
     "campo": "Sistema Operativo",
-    "contexto": "Extrae el nombre completo y exacto del SO (ej: 'Microsoft Windows 11 Home', 'FreeDOS', 'macOS'). No asumas el SO por la marca o modelo — si no está mencionado explícitamente, responde 'No disponible'."
+    "contexto": "Extrae el nombre completo y exacto del SO (ej: 'Microsoft Windows 11 Home', 'FreeDOS', 'macOS'). No asumas el SO por la marca o modelo — si no está mencionado explícitamente, responde 'No especificado'."
   },
   {
     "campo": "RAM (GB)",
@@ -291,7 +276,13 @@ Todos los endpoints de catalogación devuelven:
 }
 ```
 
-El campo `ROWNUM` siempre está presente en `resultado`. El resto de los atributos depende de los `campos_manuales` enviados en el request.
+Los atributos fijos siempre presentes en `resultado`:
+
+| Atributo | Valores posibles |
+|---|---|
+| `Tipo` | `"Laptop"`, `"Desktop"`, `"AIO"`, `"Otro"` |
+| `Part Number` | Código del fabricante o `"No disponible"` |
+| `Modelo` | Nombre completo del modelo o `"No disponible"` |
 
 ---
 

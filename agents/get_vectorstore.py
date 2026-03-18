@@ -210,6 +210,6 @@ def _matches_filter(metadata: Dict[str, Any], filter: Dict[str, Any]) -> bool:
 # class VectorStoreManager:
 #     """
 #     DEPRECATED: Esta clase usaba Chroma para diccionarios pre-cargados.
-#     Ahora se usa FAISS para todo (ver retriever_diccionario.py).
+#     Ahora se usa FAISS para todo (ver retriever_diccionario_comp.py).
 #     """
 #     pass
