@@ -122,41 +122,22 @@ def _build_vs_for(categoria: str, atributo: str) -> Optional[Any]:
 def warm_dictionaries() -> None:
     """
     Pre-carga en cache un FAISS por cada (categoria, atributo) del attribute_dictionary.csv.
-    También pre-carga el CSV de complementos para lookup O(1).
-    Se llama una vez en startup.
+    Carga desde disco si ya existe (sin llamar a OpenAI); si no, construye y persiste.
+    Se llama una vez en startup por worker.
     """
     _load_csvs()
 
-    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
-    if not api_key:
-        logging.warning("OPENAI_API_KEY no configurada, saltando pre-carga de diccionarios")
-        return
-
-    from langchain_openai import OpenAIEmbeddings
-    from langchain_community.vectorstores import FAISS as FAISSStore
-    from langchain_core.documents import Document as LCDocument
-
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
-
     grupos = _dict_df.groupby(["categoria", "atributo"])
     total = 0
-    for (categoria, atributo), group in grupos:
-        valores = group["valor"].dropna().tolist()
-        if not valores:
-            continue
+    for (categoria, atributo), _ in grupos:
         try:
-            docs = [
-                LCDocument(page_content=v, metadata={"categoria": categoria, "atributo": atributo, "valor": v})
-                for v in valores
-            ]
-            vs = FAISSStore.from_documents(docs, embeddings)
-            _dict_vs_cache[_cache_key(categoria, atributo)] = vs
-            total += 1
-            logging.info(f"  ✓ FAISS '{categoria}::{atributo}': {len(valores)} valores")
+            vs = _build_vs_for(categoria, atributo)
+            if vs is not None:
+                total += 1
         except Exception as e:
             logging.error(f"  ✗ Error cargando FAISS para '{categoria}::{atributo}': {e}")
 
-    logging.info(f"warm_dictionaries() completado — {total} pares (categoria, atributo) cargados")
+    logging.info(f"warm_dictionaries() completado — {total} pares cargados")
 
 
 def normalizar_con_diccionario(
