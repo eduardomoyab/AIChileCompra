@@ -37,6 +37,9 @@ COPY requirements.txt .
 # Instalar dependencias de Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-descargar modelos de EasyOCR durante el build (evita descarga en runtime)
+RUN python -c "import easyocr; easyocr.Reader(['es', 'en'], gpu=False)" 2>&1 | tail -5
+
 # Copiar el resto del código
 COPY . .
 
