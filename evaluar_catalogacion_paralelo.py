@@ -41,15 +41,36 @@ LABEL_FIELDS = [
     "Procesador",
     "Nucleos",
     "Hilos",
-    "RAM (GB)",
+    "RAM",
     "Tipo RAM",
     "Sistema Operativo",
     "Tipo Almacenamiento",
-    "Almacenamiento (GB)",
+    "Almacenamiento",
     "Pantalla (Pulgadas)",
 ]
 
-CAMPOS_MANUALES_API = [f for f in LABEL_FIELDS]
+CAMPOS_MANUALES_API = [
+    {"campo": "Modalidad",            "contexto": "Busca si el contexto menciona 'arriendo', 'arrendamiento' o 'leasing'. Si es así, responde exactamente: 'Arriendo'. Si no o se habla de compra/adquisición, responde exactamente: 'Compra'. Solo responde 'Arriendo' o 'Compra'."},
+    {"campo": "Tipo Producto",        "contexto": "Responde SOLO una de estas opciones exactas: 'laptop', 'desktop', 'aio', 'otro'. 'laptop' para notebooks/portátiles, 'desktop' para PC de escritorio torres, 'aio' para All-in-One, 'otro' si no es ninguno de los anteriores."},
+    {"campo": "Marca",                "contexto": "Responde SOLO el nombre de la marca (ej: 'HP', 'Lenovo', 'Dell', 'Apple', 'Acer', 'Asus'). Infiere la marca del modelo si no aparece explícita. Si no hay info suficiente, responde 'No especificado'."},
+    {"campo": "Procesador",           "contexto": "Responde SOLO el nombre estándar del modelo de procesador (ej: 'AMD Ryzen 7 7735U', 'Intel Core i7-1355U', 'Apple M3'). Copia EXACTAMENTE todos los dígitos y letras del número de modelo. NO agregues velocidades, núcleos, generaciones ni descripciones extra. Incluye 'Core' para Intel si corresponde."},
+    {"campo": "Nucleos",              "contexto": "Responde SOLO el número de núcleos físicos (ej: '8', '16'). Sin texto adicional."},
+    {"campo": "Hilos",                "contexto": "Responde SOLO el número de hilos/threads (ej: '8', '16'). Sin texto adicional."},
+    {"campo": "RAM",                  "contexto": "Variable numerica con Cantidad de memoria RAM en GB. Responde SOLO el número, SIN unidades (ej: '16', '32')."},
+    {"campo": "Tipo RAM",             "contexto": "Responde SOLO el tipo de memoria (ej: 'DDR4', 'DDR5', 'LPDDR4X', 'LPDDR5X'). Para Apple responde 'Memoria Unificada'. Si no lo encuentras en el documento, responde 'No disponible'. NUNCA lo deduzcas del modelo o capacidad. Copia EXACTAMENTE incluyendo sufijo X si aparece."},
+    {"campo": "Sistema Operativo",    "contexto": "Responde el nombre EXACTO del SO instalado (ej: 'Microsoft Windows 11 Pro', 'macOS', 'FreeDOS'). Una sola versión y edición. Para Apple responde 'macOS'. Si el documento NO menciona SO, responde 'No disponible'. NUNCA asumas el SO por la marca o modelo."},
+    {"campo": "Tipo Almacenamiento",  "contexto": "Responde SOLO el tipo de almacenamiento (ej: 'SSD', 'HDD', etc.). Sin capacidades ni números ni modelos especificos."},
+    {"campo": "Almacenamiento",       "contexto": "Variable numerica con Cantidad de almacenamiento en GB. Responde SOLO el número, SIN unidades (ej: '256', '512', '1000')."},
+    {"campo": "Pantalla (Pulgadas)",  "contexto": "Responde SOLO el número decimal, sin unidades (ej: '13.3', '15.6', '14'). Sin texto adicional."},
+]
+
+# Columnas del CSV que difieren del nombre en LABEL_FIELDS
+CSV_COL_MAP = {
+    "Nucleos": "Núcleos",
+    "Hilos":   "Hilos Procesador",
+    "RAM":     "RAM (GB)",
+    "Almacenamiento": "Almacenamiento (GB)",
+}
 
 TIPO_API_A_CSV = {
     "laptop":  "notebook",
@@ -108,7 +129,7 @@ def normalizar_numero(valor) -> str:
     return normalizar(valor)
 
 
-CAMPOS_NUMERICOS = {"nucleos", "hilos", "ram (gb)", "almacenamiento (gb)", "pantalla (pulgadas)"}
+CAMPOS_NUMERICOS = {"nucleos", "hilos", "ram", "almacenamiento", "pantalla (pulgadas)"}
 
 
 def son_iguales(campo: str, pred: str, label: str) -> bool:
@@ -149,31 +170,41 @@ def llamar_api(iteracion: int, row: pd.Series) -> dict:
     }
 
     t_ini = time.time()
-    try:
-        resp = requests.post(
-            f"{API_URL}/catalogar",
-            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-            json=body,
-            timeout=360,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        t_seg = round(time.time() - t_ini, 2)
-        logger.error(f"  [{iteracion:02d}] Error API {codigo_cot}: {exc}")
-        return {
-            "iteracion": iteracion,
-            "codigo_cot": codigo_cot,
-            "rut_proveedor": rut_proveedor,
-            "nombre_prov": nombre_prov,
-            "tipo_real": tipo_real,
-            "row": row,
-            "data": {"error": str(exc)},
-            "segundos": t_seg,
-        }
+    max_reintentos = 3
+    for intento in range(max_reintentos):
+        try:
+            resp = requests.post(
+                f"{API_URL}/catalogar",
+                headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                json=body,
+                timeout=360,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            break  # éxito
+        except Exception as exc:
+            es_500 = "500" in str(exc)
+            if es_500 and intento < max_reintentos - 1:
+                wait = 5 * (intento + 1)
+                logger.warning(f"  [{iteracion:02d}] 500 en {codigo_cot} — reintento {intento+1}/{max_reintentos} en {wait}s")
+                time.sleep(wait)
+            else:
+                t_seg = round(time.time() - t_ini, 2)
+                logger.error(f"  [{iteracion:02d}] Error API {codigo_cot}: {exc}")
+                return {
+                    "iteracion": iteracion,
+                    "codigo_cot": codigo_cot,
+                    "rut_proveedor": rut_proveedor,
+                    "nombre_prov": nombre_prov,
+                    "tipo_real": tipo_real,
+                    "row": row,
+                    "data": {"error": str(exc)},
+                    "segundos": t_seg,
+                }
 
     t_seg = round(time.time() - t_ini, 2)
-    logger.info(f"  [{iteracion:02d}/{N_MUESTRAS}] ✓ {tipo_real} | {codigo_cot} | {t_seg}s | Tipo: {data.get('resultado', {}).get('Tipo', 'N/A')}")
+    data = data or {}
+    logger.info(f"  [{iteracion:02d}/{N_MUESTRAS}] ✓ {tipo_real} | {codigo_cot} | {t_seg}s | Tipo: {(data.get('resultado') or {}).get('Tipo', 'N/A')}")
     return {
         "iteracion": iteracion,
         "codigo_cot": codigo_cot,
@@ -214,8 +245,11 @@ def procesar_resultado(res: dict) -> tuple[list[dict], dict]:
 
     filas_detalle = []
     for campo in LABEL_FIELDS:
-        label_val = limpiar_texto(row.get(campo, ""))
+        csv_col   = CSV_COL_MAP.get(campo, campo)
+        label_val = limpiar_texto(row.get(csv_col, ""))
         pred_val  = limpiar_texto(resultado.get("Tipo", "") if campo == "Tipo Producto" else resultado.get(campo, ""))
+        if not pred_val or pred_val.lower() in ("nan", "none", "no especificado"):
+            pred_val = "No disponible"
         correcto  = son_iguales(campo, pred_val, label_val) if label_val else None
 
         estado_str = "OK" if correcto else ("--" if correcto is None else "FAIL")

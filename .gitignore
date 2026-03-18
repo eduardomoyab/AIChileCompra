@@ -72,12 +72,21 @@ output*.json
 *.csv
 tokens_input_output.xlsx
 
-# Evaluación y análisis (archivos generados por evaluar_catalogacion.py / analysis_eval.py)
+# Scripts locales de evaluación, extracción y testing (no van al repo)
 evaluar_catalogacion.py
+evaluar_catalogacion_paralelo.py
 evaluar_catalogacion_*.log
 evaluacion_catalogacion_*.xlsx
+evaluacion_recalculada_*.xlsx
+extraer_atributos.py
+extraer_atributos_licitaciones.py
+catalogar_licitaciones_batch.py
+recalcular_excel.py
+test_paralelo.py
+test_serie.py
 analysis_eval.py
 response.json
+error.txt
 
 # Datos de muestra locales
 sample_OC_*.csv

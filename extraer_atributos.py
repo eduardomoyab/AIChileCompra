@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 # Añadir el directorio actual al path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agents.grafo_comp import ejecutar_catalogacion
+from agents.grafo import ejecutar_catalogacion
 
 # Cargar variables de entorno
 load_dotenv()

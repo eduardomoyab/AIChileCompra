@@ -15,26 +15,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Instalar dependencias del sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Para Firefox/Geckodriver (Selenium)
-    firefox-esr \
-    wget \
-    # Para procesamiento de imágenes
-    tesseract-ocr \
-    tesseract-ocr-spa \
     # Para procesamiento de PDFs
     poppler-utils \
-    # Librería para build de algunos paquetes Python
+    # Para EasyOCR / OpenCV
+    libgl1 \
+    libglib2.0-0 \
+    # Para build de algunos paquetes Python
     gcc \
     g++ \
     # Limpieza
     && rm -rf /var/lib/apt/lists/*
-
-# Descargar e instalar Geckodriver
-RUN wget -q https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckodriver-v0.34.0-linux64.tar.gz \
-    && tar -xzf geckodriver-v0.34.0-linux64.tar.gz \
-    && mv geckodriver /usr/local/bin/ \
-    && chmod +x /usr/local/bin/geckodriver \
-    && rm geckodriver-v0.34.0-linux64.tar.gz
 
 # Crear directorio de trabajo
 WORKDIR /app

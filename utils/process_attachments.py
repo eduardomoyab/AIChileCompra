@@ -3,13 +3,14 @@ import io
 import logging
 import unicodedata
 import gc
+import numpy as np
 from tqdm import tqdm
 from docx import Document
 from openpyxl import load_workbook
 from bs4 import BeautifulSoup
 from typing import Optional, List
 import fitz  # PyMuPDF
-import pytesseract
+import easyocr
 from PIL import Image
 
 # Configuración por defecto
@@ -17,18 +18,10 @@ MAX_PAGES = 15
 TEXT_THRESHOLD = 100
 MAX_FILENAME_LENGTH = 100
 
-# Ruta al ejecutable de Tesseract (configurable vía variable de entorno)
-# En Windows: instalar desde https://github.com/UB-Mannheim/tesseract/wiki
-# y agregar al PATH, o definir TESSERACT_PATH en el .env
-_tesseract_path = os.getenv("TESSERACT_PATH")
-if _tesseract_path:
-    pytesseract.pytesseract.tesseract_cmd = _tesseract_path
-
 
 class AttachmentProcessor:
     """Procesa archivos adjuntos extrayendo texto de diversos formatos.
-    PDFs e imágenes: PyMuPDF (texto nativo) + Pytesseract (OCR para páginas escaneadas).
-    Procesamiento 100% local, sin dependencias cloud ni carga de modelos en RAM.
+    PDFs e imágenes: PyMuPDF (texto nativo) + EasyOCR (OCR para páginas escaneadas).
     """
 
     def __init__(self, attachments_path: str, output_path: Optional[str] = None,
@@ -40,7 +33,7 @@ class AttachmentProcessor:
             attachments_path (str): Ruta a la carpeta con los adjuntos descargados
             output_path (str, optional): Ruta donde guardar los archivos procesados
             blacklist (list, optional): Lista de palabras para filtrar archivos
-            use_gpu (bool): Ignorado (mantenido por compatibilidad)
+            use_gpu (bool): Si usar GPU para EasyOCR
         """
         self.attachments_path = os.path.abspath(attachments_path)
 
@@ -51,6 +44,19 @@ class AttachmentProcessor:
             self.output_path = os.path.abspath(output_path)
 
         self.blacklist = blacklist if blacklist else []
+
+        # Inicializar EasyOCR (auto-detecta GPU si está disponible)
+        try:
+            import torch
+            gpu = use_gpu if use_gpu else torch.cuda.is_available()
+        except ImportError:
+            gpu = False
+        try:
+            self.reader = easyocr.Reader(['es', 'en'], gpu=gpu)
+            logging.info(f"EasyOCR inicializado (gpu={gpu})")
+        except Exception as e:
+            logging.warning(f"No se pudo inicializar EasyOCR: {e}")
+            self.reader = None
 
         # Archivos omitidos
         self.skipped_files = set()
@@ -93,18 +99,21 @@ class AttachmentProcessor:
         return any(word.lower() in text.lower() for word in self.blacklist)
 
     def _ocr_image(self, img: Image.Image) -> str:
-        """Aplica pytesseract a una imagen PIL y retorna el texto."""
+        """Aplica EasyOCR a una imagen PIL y retorna el texto."""
+        if not self.reader:
+            return ''
         try:
-            return pytesseract.image_to_string(img, lang='spa+eng')
+            result = self.reader.readtext(np.array(img), detail=0)
+            return '\n'.join(result)
         except Exception as e:
-            logging.warning(f"Pytesseract error: {e}")
+            logging.warning(f"EasyOCR error: {e}")
             return ''
 
     def _extract_text_from_pdf(self, pdf_path: str) -> Optional[str]:
         """
         Extrae texto de un PDF página por página con PyMuPDF.
-        - Páginas con texto nativo suficiente → extracción directa (ms por página).
-        - Páginas escaneadas (poco texto)     → render a imagen + Pytesseract OCR.
+        - Páginas con texto nativo suficiente → extracción directa.
+        - Páginas escaneadas (poco texto)     → render a imagen + EasyOCR.
         """
         try:
             doc = fitz.open(pdf_path)
@@ -133,7 +142,7 @@ class AttachmentProcessor:
             return None
 
     def _extract_text_with_ocr(self, image_path: str) -> Optional[str]:
-        """Extrae texto de imágenes usando Pytesseract"""
+        """Extrae texto de imágenes usando EasyOCR"""
         try:
             img = Image.open(image_path)
             text = self._ocr_image(img)

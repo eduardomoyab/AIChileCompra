@@ -6,11 +6,14 @@ Incluye OCR para PDFs escaneados y filtrado de archivos irrelevantes.
 """
 
 import os
+import io
 import logging
+import numpy as np
 from typing import List, Dict
-from PyPDF2 import PdfReader
+import fitz  # PyMuPDF
 import easyocr
 import unicodedata
+from PIL import Image
 from docx import Document
 from openpyxl import load_workbook
 from bs4 import BeautifulSoup
@@ -48,12 +51,17 @@ class LicitacionAttachmentProcessor:
         self.output_folder = output_folder
         os.makedirs(output_folder, exist_ok=True)
 
-        # Inicializar OCR
+        # Inicializar EasyOCR (auto-detecta GPU si está disponible)
         try:
-            self.reader = easyocr.Reader(['es'], gpu=False)
-            logging.info("OCR inicializado correctamente")
+            import torch
+            gpu = torch.cuda.is_available()
+        except ImportError:
+            gpu = False
+        try:
+            self.reader = easyocr.Reader(['es', 'en'], gpu=gpu)
+            logging.info(f"EasyOCR inicializado (gpu={gpu})")
         except Exception as e:
-            logging.warning(f"No se pudo inicializar OCR: {e}")
+            logging.warning(f"No se pudo inicializar EasyOCR: {e}")
             self.reader = None
 
         self.skipped_files = set()
@@ -75,27 +83,27 @@ class LicitacionAttachmentProcessor:
         return False
 
     def extract_text_from_pdf(self, file_path: str) -> str:
-        """Extrae texto de un PDF."""
+        """Extrae texto de un PDF. Páginas escaneadas → EasyOCR."""
         try:
-            reader = PdfReader(file_path)
-            text = ""
+            doc = fitz.open(file_path)
+            pages_text = []
 
-            # Limitar páginas
-            num_pages = min(len(reader.pages), self.MAX_PAGES)
+            for i, page in enumerate(doc):
+                if i >= self.MAX_PAGES:
+                    break
+                native = page.get_text() or ''
 
-            for i in range(num_pages):
-                page = reader.pages[i]
-                page_text = page.extract_text()
-                text += page_text + "\n\n"
+                if len(native.strip()) >= self.TEXT_THRESHOLD:
+                    pages_text.append(native)
+                elif self.reader:
+                    logging.info(f"Página {i+1} escaneada, aplicando OCR: {os.path.basename(file_path)}")
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    result = self.reader.readtext(np.array(img), detail=0)
+                    pages_text.append('\n'.join(result))
 
-            # Si el texto es muy corto, probablemente es un PDF escaneado
-            if len(text.strip()) < self.TEXT_THRESHOLD and self.reader:
-                logging.info(f"PDF con poco texto, aplicando OCR: {os.path.basename(file_path)}")
-                # Aquí se podría implementar OCR con pdf2image + easyocr
-                # Por ahora retornamos el texto extraído
-                pass
-
-            return text.strip()
+            doc.close()
+            return '\n\n'.join(t for t in pages_text if t.strip())
 
         except Exception as e:
             logging.exception(f"Error extrayendo texto de PDF {file_path}: {e}")

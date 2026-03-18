@@ -36,10 +36,9 @@ python-docx==1.2.0
 lxml==5.3.0
 beautifulsoup4==4.12.3
 
-# OCR local (PyMuPDF para texto nativo + Pytesseract para páginas escaneadas)
-# Requiere Tesseract instalado: https://github.com/UB-Mannheim/tesseract/wiki
+# OCR local (PyMuPDF para texto nativo + EasyOCR para páginas escaneadas)
 pymupdf==1.25.3
-pytesseract==0.3.13
+easyocr>=1.7.0
 Pillow>=10.0.0
 
 # HTTP client
