@@ -18,6 +18,21 @@ MAX_PAGES = 15
 TEXT_THRESHOLD = 100
 MAX_FILENAME_LENGTH = 100
 
+# Reader EasyOCR compartido entre todos los AttachmentProcessor del proceso
+# Se inicializa una vez al importar el módulo (una vez por worker de gunicorn)
+try:
+    import torch
+    _gpu = torch.cuda.is_available()
+except ImportError:
+    _gpu = False
+
+try:
+    _easyocr_reader = easyocr.Reader(['es', 'en'], gpu=_gpu)
+    logging.info(f"EasyOCR inicializado al cargar módulo (gpu={_gpu})")
+except Exception as _e:
+    _easyocr_reader = None
+    logging.warning(f"EasyOCR no disponible: {_e}")
+
 
 class AttachmentProcessor:
     """Procesa archivos adjuntos extrayendo texto de diversos formatos.
@@ -45,18 +60,8 @@ class AttachmentProcessor:
 
         self.blacklist = blacklist if blacklist else []
 
-        # Inicializar EasyOCR (auto-detecta GPU si está disponible)
-        try:
-            import torch
-            gpu = use_gpu if use_gpu else torch.cuda.is_available()
-        except ImportError:
-            gpu = False
-        try:
-            self.reader = easyocr.Reader(['es', 'en'], gpu=gpu)
-            logging.info(f"EasyOCR inicializado (gpu={gpu})")
-        except Exception as e:
-            logging.warning(f"No se pudo inicializar EasyOCR: {e}")
-            self.reader = None
+        # Reutilizar el reader global inicializado al cargar el módulo
+        self.reader = _easyocr_reader
 
         # Archivos omitidos
         self.skipped_files = set()

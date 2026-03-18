@@ -18,6 +18,20 @@ from docx import Document
 from openpyxl import load_workbook
 from bs4 import BeautifulSoup
 
+# Reader EasyOCR compartido por proceso (una vez por worker de gunicorn)
+try:
+    import torch
+    _gpu = torch.cuda.is_available()
+except ImportError:
+    _gpu = False
+
+try:
+    _easyocr_reader = easyocr.Reader(['es', 'en'], gpu=_gpu)
+    logging.info(f"EasyOCR inicializado al cargar módulo (gpu={_gpu})")
+except Exception as _e:
+    _easyocr_reader = None
+    logging.warning(f"EasyOCR no disponible: {_e}")
+
 
 class LicitacionAttachmentProcessor:
     """
@@ -51,18 +65,8 @@ class LicitacionAttachmentProcessor:
         self.output_folder = output_folder
         os.makedirs(output_folder, exist_ok=True)
 
-        # Inicializar EasyOCR (auto-detecta GPU si está disponible)
-        try:
-            import torch
-            gpu = torch.cuda.is_available()
-        except ImportError:
-            gpu = False
-        try:
-            self.reader = easyocr.Reader(['es', 'en'], gpu=gpu)
-            logging.info(f"EasyOCR inicializado (gpu={gpu})")
-        except Exception as e:
-            logging.warning(f"No se pudo inicializar EasyOCR: {e}")
-            self.reader = None
+        # Reutilizar el reader global inicializado al cargar el módulo
+        self.reader = _easyocr_reader
 
         self.skipped_files = set()
 
