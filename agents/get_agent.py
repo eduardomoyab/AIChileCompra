@@ -17,10 +17,13 @@ def _get_openai_key_roundrobin() -> str:
     global _openai_keys_cycle
     with _openai_keys_lock:
         if _openai_keys_cycle is None:
-            keys = [k for k in [
-                os.getenv("OPENAI_API_KEY"),
-                os.getenv("OPENAI_API_KEY_2"),
-            ] if k]
+            # Soporta múltiples keys separadas por coma en OPENAI_API_KEY
+            raw = os.getenv("OPENAI_API_KEY", "")
+            keys = [k.strip() for k in raw.split(",") if k.strip()]
+            # Compatibilidad con variable separada OPENAI_API_KEY_2
+            extra = (os.getenv("OPENAI_API_KEY_2") or "").strip()
+            if extra and extra not in keys:
+                keys.append(extra)
             if not keys:
                 raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
             _openai_keys_cycle = itertools.cycle(keys)

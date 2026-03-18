@@ -49,7 +49,7 @@ def create_faiss_from_files(
         >>> vectorstore = create_faiss_from_files(file_paths, metadatas, chunk_size=200, chunk_overlap=50)
     """
     # Validar API key
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
     if not api_key:
         raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
 
@@ -117,7 +117,7 @@ def create_faiss_from_texts(
         FAISS: Vector store en memoria listo para usar
     """
     # Validar API key
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
     if not api_key:
         raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
 

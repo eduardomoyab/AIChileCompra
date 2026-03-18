@@ -60,7 +60,7 @@ def _cache_key(categoria: str, atributo: str) -> str:
 def _build_vs_for(categoria: str, atributo: str) -> Optional[Any]:
     """Crea y cachea un FAISS para el par (categoria, atributo)."""
     _load_csvs()
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
     if not api_key:
         logging.warning("OPENAI_API_KEY no configurada, no se puede crear FAISS de diccionario")
         return None
@@ -93,7 +93,7 @@ def warm_dictionaries() -> None:
     """
     _load_csvs()
 
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
     if not api_key:
         logging.warning("OPENAI_API_KEY no configurada, saltando pre-carga de diccionarios")
         return
