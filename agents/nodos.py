@@ -7,6 +7,7 @@ Nodes wrap existing functionality from utils and agents modules.
 
 import os
 import sys
+import json
 import logging
 import time
 import asyncio
@@ -750,7 +751,7 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
         - resultado_campos_manuales: Diccionario con campos extraídos
         - errores: Lista de errores si hubo fallas
     """
-    logging.info(f"[NODO 6] Extrayendo campos manuales en paralelo")
+    logging.info(f"[NODO 6] Extrayendo campos manuales (1 llamada LLM consolidada)")
     _NODO = "nodo_4_campos_manuales"
     t_nodo = time.time()
 
@@ -788,16 +789,12 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             logging.error(error_msg)
             return state
 
-        # Sub-fase 4a: reutilizar FAISS de nodo_3 si está disponible, si no crear uno nuevo
+        # Sub-fase 4a: reutilizar FAISS de nodo_3 si está disponible
         t0 = time.time()
         vectorstore = state.get('adjuntos_vectorstore')
         if vectorstore is not None:
-            logging.info(f"✓ Reutilizando FAISS compartido de nodo_3 (sin costo de embedding)")
-            state = add_tiempo(state, _NODO, "reuso_faiss",
-                               f"Reutilizar FAISS compartido de nodo_3 ({len(txt_files)} archivos)",
-                               time.time() - t0)
+            logging.info(f"✓ Reutilizando FAISS compartido de nodo_3")
         else:
-            logging.info(f"Creando FAISS en memoria con {len(txt_files)} archivos...")
             metadatas = [
                 {
                     "codigo_cotizacion": state['codigo_cotizacion'],
@@ -808,64 +805,107 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             ]
             chunk_size = int(os.getenv('CAMPOS_MANUALES_CHUNK_SIZE', '200'))
             chunk_overlap = int(os.getenv('CAMPOS_MANUALES_CHUNK_OVERLAP', '50'))
-            logging.info(f"Creando FAISS con chunks de {chunk_size} caracteres (overlap: {chunk_overlap})...")
             vectorstore = create_faiss_from_files(
                 txt_files, metadatas,
                 chunk_size=chunk_size, chunk_overlap=chunk_overlap
             )
-            state = add_tiempo(state, _NODO, "crear_faiss",
-                               f"Crear FAISS para campos manuales ({len(txt_files)} archivos,"
-                               f" chunk={chunk_size})",
-                               time.time() - t0)
-            logging.info(f"✓ FAISS creado con chunking optimizado para campos manuales")
+            logging.info(f"✓ FAISS creado ({len(txt_files)} archivos, chunk={chunk_size})")
+        state = add_tiempo(state, _NODO, "faiss", "FAISS listo", time.time() - t0)
 
-        # Sub-fase 4b: extracción paralela
+        # Sub-fase 4b: similarity_search por campo (gratis, FAISS en memoria) + deduplicar
         t0 = time.time()
-        llm_provider = state.get('llm_provider') or os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')
         k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
+        chunks_vistos = {}
+        for item in campos_manuales:
+            campo = item["campo"]
+            k_campo = k + 1 if any(kw in campo.lower() for kw in ["procesador", "cpu", "processor"]) else k
+            try:
+                docs = vectorstore.similarity_search(campo, k=k_campo)
+                for doc in docs:
+                    chunks_vistos[doc.page_content] = True
+            except Exception as e:
+                logging.warning(f"  Error buscando '{campo}': {e}")
+
+        contexto = "\n\n".join([
+            f"Fragmento {i+1}:\n{chunk}"
+            for i, chunk in enumerate(chunks_vistos.keys())
+        ])
+        logging.info(f"  {len(chunks_vistos)} chunks únicos para {len(campos_manuales)} campos")
+        state = add_tiempo(state, _NODO, "searches", "Similarity searches", time.time() - t0)
+
+        # Sub-fase 4c: 1 sola llamada LLM con todos los campos
+        t0 = time.time()
         payload = state.get('payload')
-        max_workers_config = int(os.getenv('CAMPOS_MANUALES_MAX_WORKERS', '9'))
-        max_workers = min(max_workers_config, len(campos_manuales))
-        logging.info(f"Ejecutando {len(campos_manuales)} agentes (máx {max_workers} en paralelo)...")
+        llm_provider = state.get('llm_provider') or os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')
 
-        resultados = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {}
-            for item in campos_manuales:
-                campo = item["campo"]
-                contexto_extra = item.get("contexto", "")
-                max_retries = int(os.getenv('CAMPOS_MANUALES_MAX_RETRIES', '3'))
-                initial_delay = float(os.getenv('CAMPOS_MANUALES_INITIAL_DELAY', '2.0'))
-                # Procesador necesita más documentos de referencia para localizar el modelo exacto
-                campo_lower_iter = campo.lower()
-                k_campo = k + 1 if any(kw in campo_lower_iter for kw in ["procesador", "cpu", "processor"]) else k
-                future = executor.submit(
-                    _extraer_campo_individual,
-                    campo, vectorstore, payload, llm_provider,
-                    k_campo, max_retries, initial_delay, contexto_extra
-                )
-                futures[future] = campo
+        campos_instrucciones = "\n".join([
+            f'- "{item["campo"]}": {item["contexto"] or "Extrae el valor exacto y limpio"}'
+            for item in campos_manuales
+        ])
+        campos_json_template = ", ".join([f'"{item["campo"]}": "..."' for item in campos_manuales])
 
-            for future in as_completed(futures):
-                campo = futures[future]
-                try:
-                    resultado = future.result()
-                    resultados.append(resultado)
-                except Exception as e:
-                    logging.error(f"Error en agente {campo}: {e}")
-                    resultados.append({"campo": campo, "valor": f"Error: {str(e)}"})
+        prompt = f"""Eres un experto en catalogación de productos tecnológicos. Extrae los atributos indicados a partir de la ficha técnica adjunta.
 
-        state = add_tiempo(state, _NODO, "extraccion_paralela",
-                           f"Extracción paralela de {len(campos_manuales)} campos"
-                           f" ({max_workers} workers)",
-                           time.time() - t0)
+Producto:
+- Categoría: {payload.get('Categoria', 'N/A')}
+- Nombre: {payload.get('productoname', 'N/A')}
+- Descripción Comprador: {payload.get('DescripcionProductoComprador', 'N/A')}
+- Descripción Proveedor: {payload.get('DescripcionProductoProveedor', 'N/A')}
 
-        resultado_json = {r["campo"]: r["valor"] for r in resultados}
-        logging.info(f"✓ Extracción paralela completada:")
-        for campo, valor in resultado_json.items():
-            logging.info(f"  - {campo}: {valor[:50]}...")
+Contexto (fragmentos de la ficha técnica adjunta):
+{contexto}
 
-        state['resultado_campos_manuales'] = resultado_json
+REGLAS:
+1. La ficha técnica es la fuente principal. Las descripciones solo identifican el producto.
+2. Si un valor no aparece en los documentos, usa "No especificado".
+3. No inventes información. Extrae SOLO lo que aparece explícitamente.
+4. Si hay múltiples productos en el contexto, extrae solo del producto principal.
+
+Campos a extraer:
+{campos_instrucciones}
+
+Responde ÚNICAMENTE con un JSON válido, sin explicaciones ni markdown:
+{{{campos_json_template}}}"""
+
+        llm = get_llm(model_provider=llm_provider, temperature=0.1)
+        max_retries = int(os.getenv('CAMPOS_MANUALES_MAX_RETRIES', '3'))
+        delay = float(os.getenv('CAMPOS_MANUALES_INITIAL_DELAY', '2.0'))
+        resultado_json = {}
+
+        for attempt in range(max_retries):
+            try:
+                response = llm.invoke(prompt)
+                content = response.content.strip()
+                if content.startswith("```"):
+                    content = re.sub(r"^```(?:json)?\s*", "", content)
+                    content = re.sub(r"\s*```$", "", content)
+                resultado_json = json.loads(content)
+                break
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "rate" in error_msg.lower() or "quota" in error_msg.lower():
+                    if attempt < max_retries - 1:
+                        logging.warning(f"  Rate limit, esperando {delay}s...")
+                        time.sleep(delay)
+                        delay *= 2
+                        continue
+                logging.error(f"  Error LLM intento {attempt+1}: {error_msg}")
+                if attempt == max_retries - 1:
+                    resultado_json = {item["campo"]: "Error en extracción" for item in campos_manuales}
+
+        # Aplicar _limpiar_valor por campo
+        resultado_final = {}
+        for item in campos_manuales:
+            campo = item["campo"]
+            valor = resultado_json.get(campo, "No especificado")
+            resultado_final[campo] = _limpiar_valor(str(valor), campo)
+
+        state = add_tiempo(state, _NODO, "llm", "1 llamada LLM consolidada", time.time() - t0)
+        logging.info(f"✓ Extracción completada ({len(resultado_final)} campos, 1 llamada LLM):")
+        for campo, valor in resultado_final.items():
+            logging.info(f"  - {campo}: {str(valor)[:50]}")
+
+        state['resultado_campos_manuales'] = resultado_final
 
     except Exception as e:
         error_msg = f"Error en extracción de campos manuales: {str(e)}"
@@ -873,9 +913,7 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
         logging.exception(error_msg)
         state['resultado_campos_manuales'] = {}
 
-    state = add_tiempo(state, _NODO, "total",
-                       "Total nodo campos_manuales",
-                       time.time() - t_nodo)
+    state = add_tiempo(state, _NODO, "total", "Total nodo campos_manuales", time.time() - t_nodo)
     return state
 
 
