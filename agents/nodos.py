@@ -812,39 +812,46 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             logging.info(f"✓ FAISS creado ({len(txt_files)} archivos, chunk={chunk_size})")
         state = add_tiempo(state, _NODO, "faiss", "FAISS listo", time.time() - t0)
 
-        # Sub-fase 4b: similarity_search por campo (gratis, FAISS en memoria) + deduplicar
+        # Sub-fase 4b: similarity_search por campo (gratis, FAISS en memoria)
         t0 = time.time()
         k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
-        chunks_vistos = {}
+        campos_con_docs = []
         for item in campos_manuales:
             campo = item["campo"]
+            contexto_extra = item.get("contexto", "")
             k_campo = k + 1 if any(kw in campo.lower() for kw in ["procesador", "cpu", "processor"]) else k
             try:
                 docs = vectorstore.similarity_search(campo, k=k_campo)
-                for doc in docs:
-                    chunks_vistos[doc.page_content] = True
+                fragmentos = "\n\n".join([
+                    f"  Fragmento {i+1}:\n  {doc.page_content}"
+                    for i, doc in enumerate(docs)
+                ]) if docs else "  (sin documentos relevantes encontrados)"
             except Exception as e:
                 logging.warning(f"  Error buscando '{campo}': {e}")
-
-        contexto = "\n\n".join([
-            f"Fragmento {i+1}:\n{chunk}"
-            for i, chunk in enumerate(chunks_vistos.keys())
-        ])
-        logging.info(f"  {len(chunks_vistos)} chunks únicos para {len(campos_manuales)} campos")
+                fragmentos = "  (error en búsqueda)"
+            campos_con_docs.append({
+                "campo": campo,
+                "contexto": contexto_extra,
+                "fragmentos": fragmentos,
+            })
+        logging.info(f"  {len(campos_con_docs)} campos con documentos RAG individuales")
         state = add_tiempo(state, _NODO, "searches", "Similarity searches", time.time() - t0)
 
-        # Sub-fase 4c: 1 sola llamada LLM con todos los campos
+        # Sub-fase 4c: 1 sola llamada LLM con contexto por campo
         t0 = time.time()
         payload = state.get('payload')
         llm_provider = state.get('llm_provider') or os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')
 
-        campos_instrucciones = "\n".join([
-            f'- "{item["campo"]}": {item["contexto"] or "Extrae el valor exacto y limpio"}'
-            for item in campos_manuales
-        ])
         campos_json_template = ", ".join([f'"{item["campo"]}": "..."' for item in campos_manuales])
 
-        prompt = f"""Eres un experto en catalogación de productos tecnológicos. Extrae los atributos indicados a partir de la ficha técnica adjunta.
+        secciones_campos = "\n\n".join([
+            f'CAMPO: {c["campo"]}\n'
+            f'INSTRUCCIONES: {c["contexto"] or "Extrae el valor exacto y limpio"}\n'
+            f'DOCUMENTOS RELEVANTES:\n{c["fragmentos"]}'
+            for c in campos_con_docs
+        ])
+
+        prompt = f"""Eres un experto en catalogación de productos tecnológicos. Para cada campo se entregan sus documentos más relevantes de la ficha técnica. Extrae el valor de cada campo usando SOLO sus propios documentos.
 
 Producto:
 - Categoría: {payload.get('Categoria', 'N/A')}
@@ -852,18 +859,17 @@ Producto:
 - Descripción Comprador: {payload.get('DescripcionProductoComprador', 'N/A')}
 - Descripción Proveedor: {payload.get('DescripcionProductoProveedor', 'N/A')}
 
-Contexto (fragmentos de la ficha técnica adjunta):
-{contexto}
-
-REGLAS:
+REGLAS GENERALES:
 1. La ficha técnica es la fuente principal. Las descripciones solo identifican el producto.
-2. Si un valor no aparece en los documentos, usa "No especificado".
+2. Si un valor no aparece en los documentos del campo, usa "No especificado".
 3. No inventes información. Extrae SOLO lo que aparece explícitamente.
 4. Si hay múltiples productos en el contexto, extrae solo del producto principal.
 
-Campos a extraer:
-{campos_instrucciones}
+--- CAMPOS A EXTRAER ---
 
+{secciones_campos}
+
+--- OUTPUT ---
 Responde ÚNICAMENTE con un JSON válido, sin explicaciones ni markdown:
 {{{campos_json_template}}}"""
 
