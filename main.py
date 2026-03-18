@@ -71,13 +71,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Key desde .env
-API_KEY = os.getenv("API_KEY", "your-secret-api-key-here")
+# API Keys desde .env (soporta múltiples separadas por coma)
+_raw_keys = os.getenv("API_KEY", "your-secret-api-key-here")
+API_KEYS = {k.strip() for k in _raw_keys.split(",") if k.strip()}
 
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 async def require_api_key(x_api_key: Optional[str] = Depends(api_key_header)):
-    if not x_api_key or x_api_key != API_KEY:
+    if not x_api_key or x_api_key not in API_KEYS:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API Key inválida"
@@ -99,7 +100,7 @@ async def verify_api_key(x_api_key: str = Header(...)):
     Example:
         curl -H "X-API-Key: your-api-key" http://localhost:8000/catalogar
     """
-    if x_api_key != API_KEY:
+    if x_api_key not in API_KEYS:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API Key inválida"
@@ -532,7 +533,7 @@ async def startup_event():
     logging.info("Versión: 1.0.0")
     logging.info("="*80)
     logging.info(f"LLM Provider por defecto: {os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')}")
-    logging.info(f"API Key configurada: {'✓' if API_KEY != 'your-secret-api-key-here' else '✗'}")
+    logging.info(f"API Keys configuradas: {len(API_KEYS)} ({'✓' if 'your-secret-api-key-here' not in API_KEYS else '✗'})")
 
     # Pre-calentar FAISS diccionarios en background para eliminar el cold-start en nodo_5
     try:
