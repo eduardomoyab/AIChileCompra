@@ -23,8 +23,8 @@ _download_locks_mutex = threading.Lock()
 # Añadir el directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.state_comp import CatalogacionState, add_error, add_warning, add_tiempo
-from agents.catalogacion_comp import CatalogacionComputadores
+from agents.state import CatalogacionState, add_error, add_warning, add_tiempo
+from agents.normalizador import Normalizador
 from agents.get_agent import get_llm
 from agents.get_vectorstore import create_faiss_from_files
 from utils.get_attachments import download_attachments_simple
@@ -276,7 +276,7 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
     """
     Nodo que ejecuta RAG con los adjuntos procesados.
 
-    Utiliza CatalogacionComputadores para extraer atributos del producto
+    Utiliza Normalizador para extraer atributos del producto
     usando los adjuntos procesados.
 
     Args:
@@ -294,21 +294,7 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
     t_nodo = time.time()
 
     try:
-        # Sub-fase 3a: instanciar catalogador (carga configs y diccionario Excel)
-        t0 = time.time()
-        catalogador = CatalogacionComputadores(llm_provider=state.get('llm_provider'))
-        state = add_tiempo(state, _NODO, "init_catalogador",
-                           "Instanciar CatalogacionComputadores (cargar YAML + Excel)",
-                           time.time() - t0)
-
-        # Sub-fase 3b: inicializar LLMs
-        t0 = time.time()
-        catalogador._initialize_llms()
-        state = add_tiempo(state, _NODO, "init_llm",
-                           f"Inicializar LLM ({catalogador.llm_provider})",
-                           time.time() - t0)
-
-        # Sub-fase 3c: crear FAISS una sola vez y guardarlo en estado para reutilizar en nodo_4
+        # Crear FAISS una sola vez y guardarlo en estado para reutilizar en campos_manuales_node
         t0 = time.time()
         processed_path = state['processed_path']
         all_txt_files = [
@@ -333,41 +319,13 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         chunk_overlap = int(os.getenv('ADJUNTOS_CHUNK_OVERLAP', '100'))
         vectorstore_shared = create_faiss_from_files(txt_files, metadatas, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         state['adjuntos_vectorstore'] = vectorstore_shared
-        state = add_tiempo(state, _NODO, "crear_faiss_compartido",
-                           f"Crear FAISS compartido nodo_3+nodo_4 ({len(txt_files)} archivos, chunk={chunk_size})",
+        state = add_tiempo(state, _NODO, "crear_faiss",
+                           f"Crear FAISS ({len(txt_files)} archivos, chunk={chunk_size})",
                            time.time() - t0)
-        logging.info(f"✓ FAISS compartido creado y guardado en estado")
+        logging.info(f"✓ FAISS creado y guardado en estado")
 
-        # Sub-fases 3d..3f: dentro de catalogar_producto (reutiliza el FAISS ya creado)
-        tiempos_locales = state.get('tiempos', [])
-        _max_reintentos_llm = 4
-        for _intento in range(_max_reintentos_llm):
-            try:
-                resultado = catalogador.catalogar_producto(
-                    payload=state['payload'],
-                    codigo_cotizacion=state['codigo_cotizacion'],
-                    rut_proveedor=state['rut_proveedor'],
-                    processed_path=state['processed_path'],
-                    use_diccionarios=False,
-                    tiempos=tiempos_locales,
-                    nodo_nombre=_NODO,
-                    vectorstore=vectorstore_shared,
-                )
-                break
-            except Exception as _e:
-                if ("429" in str(_e) or "rate_limit" in str(_e).lower()) and _intento < _max_reintentos_llm - 1:
-                    _wait = 2 ** _intento
-                    logging.warning(f"  429 en catalogar_producto — reintento {_intento+1}/{_max_reintentos_llm} en {_wait}s")
-                    time.sleep(_wait)
-                else:
-                    raise
-        # tiempos_locales fue mutado in-place por catalogar_producto
-        state['tiempos'] = tiempos_locales
-
-        state['resultado_adjuntos'] = resultado
-        if not state.get('use_diccionarios', True):
-            state['resultado_final'] = resultado
-        logging.info(f"✓ RAG adjuntos completado para ROWNUM {state['payload'].get('ROWNUM')}")
+        state['resultado_adjuntos'] = {"ROWNUM": state['payload'].get('ROWNUM')}
+        logging.info(f"✓ Nodo RAG adjuntos completado — todos los campos se extraen via campos_manuales")
 
     except Exception as e:
         error_msg = f"Error en RAG con adjuntos: {str(e)}"
@@ -386,7 +344,7 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
     """
     Nodo que ejecuta RAG con diccionarios para normalizar atributos.
 
-    Utiliza CatalogacionComputadores para normalizar y completar los atributos
+    Utiliza Normalizador para normalizar y completar los atributos
     usando los diccionarios técnicos.
 
     Args:
@@ -421,7 +379,7 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
     try:
         # Sub-fase 5a: instanciar catalogador + mezcla de campos manuales
         t0 = time.time()
-        catalogador = CatalogacionComputadores(llm_provider=state.get('llm_provider'))
+        catalogador = Normalizador(llm_provider=state.get('llm_provider'))
         resultado_previo = dict(state['resultado_adjuntos'])
         if state.get('resultado_campos_manuales'):
             logging.info("Mezclando campos manuales con resultado de adjuntos...")
@@ -436,6 +394,7 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
         tiempos_locales = state.get('tiempos', [])
         resultado = catalogador.aplicar_diccionarios(
             resultado_adjuntos=resultado_previo,
+            categoria=state['payload'].get('Categoria', ''),
             tiempos=tiempos_locales,
             nodo_nombre=_NODO,
             similarity_threshold=state.get('diccionario_similarity_threshold', 0.85),
@@ -667,25 +626,9 @@ def _extraer_campo_individual(
     """
     campo_lower = campo.lower()
 
-    # Construir query semántica enriquecida con contexto del producto para campos clave
-    query_busqueda = campo
-    nombre_producto = (
-        payload.get("productoname") or
-        payload.get("DescripcionProductoComprador") or
-        ""
-    )
-    desc_proveedor = payload.get("DescripcionProductoProveedor") or ""
-
-    if any(kw in campo_lower for kw in ["marca", "fabricante", "manufacturer"]):
-        # Para marca: usar el nombre del producto (la marca suele estar implícita en el modelo)
-        query_busqueda = f"marca fabricante {nombre_producto[:100]}"
-    elif any(kw in campo_lower for kw in ["procesador", "cpu", "processor"]):
-        # Para procesador: usar keywords técnicos de marcas + producto para localizar el chunk correcto
-        query_busqueda = f"procesador Intel AMD Apple Core Ryzen GHz {nombre_producto[:50]}"
-
     # Búsqueda semántica (solo una vez, fuera del loop de retry)
     try:
-        retrieved_docs = vectorstore.similarity_search(query_busqueda, k=k)
+        retrieved_docs = vectorstore.similarity_search(campo, k=k)
         if not retrieved_docs:
             logging.warning(f"  [Agente {campo}] No se encontraron documentos relevantes")
             return {"campo": campo, "valor": "No disponible"}

@@ -15,8 +15,8 @@ from langgraph.graph import StateGraph, END
 # Añadir el directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.state_comp import CatalogacionState, create_initial_state
-from agents.nodos_comp import (
+from agents.state import CatalogacionState, create_initial_state
+from agents.nodos import (
     descargar_adjuntos_node,
     procesar_adjuntos_node,
     rag_adjuntos_node,

@@ -534,14 +534,13 @@ async def startup_event():
     logging.info(f"LLM Provider por defecto: {os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')}")
     logging.info(f"API Key configurada: {'✓' if API_KEY != 'your-secret-api-key-here' else '✗'}")
 
-    # Pre-calentar FAISS diccionario en background para eliminar el cold-start en nodo_5
-    # El cache se vacía en cada arranque: la nueva estructura de secciones se carga correctamente
+    # Pre-calentar FAISS diccionarios en background para eliminar el cold-start en nodo_5
     try:
-        from agents.retriever_diccionario_comp import warm_features_vectorstores
-        warm_features_vectorstores()
-        logging.info("✓ FAISS features pre-cargado en cache (por campo)")
+        from agents.retriever_diccionario import warm_dictionaries
+        warm_dictionaries()
+        logging.info("✓ FAISS diccionarios pre-cargados en cache (por categoria+atributo)")
     except Exception as e:
-        logging.warning(f"No se pudo pre-cargar FAISS features: {e}")
+        logging.warning(f"No se pudo pre-cargar FAISS diccionarios: {e}")
 
     logging.info("API iniciada correctamente")
 
