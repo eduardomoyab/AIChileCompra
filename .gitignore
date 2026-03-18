@@ -72,6 +72,10 @@ output*.json
 *.csv
 tokens_input_output.xlsx
 
+# Diccionarios genéricos (sí van al repo)
+!diccionarios/attribute_dictionary.csv
+!diccionarios/attribute_complement.csv
+
 # Scripts locales de evaluación, extracción y testing (no van al repo)
 evaluar_catalogacion.py
 evaluar_catalogacion_paralelo.py
