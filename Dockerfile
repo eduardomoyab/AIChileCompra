@@ -51,6 +51,7 @@ RUN mkdir -p \
     cache/Computadores \
     cache/Medicamentos \
     cache/Adjuntos \
+    cache/faiss_dict \
     chroma_db \
     logs
 

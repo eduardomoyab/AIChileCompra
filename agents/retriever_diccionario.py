@@ -53,34 +53,68 @@ def _load_csvs() -> None:
             _comp_df = pd.DataFrame(columns=["categoria", "atributo", "valor", "atributo_complementario", "complemento"])
 
 
+FAISS_DISK_DIR = os.path.join(ROOT, "cache", "faiss_dict")
+
+
 def _cache_key(categoria: str, atributo: str) -> str:
     return f"{categoria}::{atributo}"
 
 
+def _disk_path(categoria: str, atributo: str) -> str:
+    """Directorio en disco para el FAISS de un par (categoria, atributo)."""
+    safe = f"{categoria}__{atributo}".replace(" ", "_").replace("/", "-")
+    return os.path.join(FAISS_DISK_DIR, safe)
+
+
 def _build_vs_for(categoria: str, atributo: str) -> Optional[Any]:
-    """Crea y cachea un FAISS para el par (categoria, atributo)."""
+    """Crea y cachea un FAISS para el par (categoria, atributo).
+    Primero intenta cargar desde disco; si no existe, lo construye y lo persiste."""
     _load_csvs()
-    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
-    if not api_key:
-        logging.warning("OPENAI_API_KEY no configurada, no se puede crear FAISS de diccionario")
-        return None
 
     from langchain_openai import OpenAIEmbeddings
     from langchain_community.vectorstores import FAISS as FAISSStore
     from langchain_core.documents import Document as LCDocument
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key) if api_key else None
+
+    disk_path = _disk_path(categoria, atributo)
+    key = _cache_key(categoria, atributo)
+
+    # Intentar cargar desde disco (no necesita API key)
+    if os.path.isdir(disk_path):
+        try:
+            vs = FAISSStore.load_local(disk_path, embeddings, allow_dangerous_deserialization=True)
+            _dict_vs_cache[key] = vs
+            logging.info(f"  [FAISS] '{key}' cargado desde disco")
+            return vs
+        except Exception as e:
+            logging.warning(f"  [FAISS] Error cargando '{key}' desde disco ({e}), reconstruyendo")
+
+    # Construir desde CSV (requiere API key para embeddings)
+    if not api_key:
+        logging.warning("OPENAI_API_KEY no configurada, no se puede crear FAISS de diccionario")
+        return None
 
     mask = (_dict_df["categoria"] == categoria) & (_dict_df["atributo"] == atributo)
     valores = _dict_df[mask]["valor"].dropna().tolist()
     if not valores:
         return None
 
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
     docs = [
         LCDocument(page_content=v, metadata={"categoria": categoria, "atributo": atributo, "valor": v})
         for v in valores
     ]
     vs = FAISSStore.from_documents(docs, embeddings)
-    key = _cache_key(categoria, atributo)
+
+    # Persistir en disco para futuros workers/reinicios
+    try:
+        os.makedirs(disk_path, exist_ok=True)
+        vs.save_local(disk_path)
+        logging.info(f"  [FAISS] '{key}' guardado en disco ({len(valores)} valores)")
+    except Exception as e:
+        logging.warning(f"  [FAISS] No se pudo guardar '{key}' en disco: {e}")
+
     _dict_vs_cache[key] = vs
     return vs
 
