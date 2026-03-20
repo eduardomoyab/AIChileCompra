@@ -38,12 +38,12 @@ class BuscadorAttachmentDownloader:
     # ------------------------------------------------------------------
 
     def _get_with_retries(self, url: str, headers: dict = None, params: dict = None,
-                          max_retries: int = 5, wait_seconds: int = 2, stream: bool = False):
+                          max_retries: int = 3, wait_seconds: int = 2, stream: bool = False):
         """Realiza peticiones GET con reintentos ante errores transitorios."""
         for intento in range(1, max_retries + 1):
             try:
                 response = requests.get(url, headers=headers, params=params,
-                                        stream=stream, timeout=30)
+                                        stream=stream, timeout=10)
                 if response.status_code == 200:
                     return response
                 logging.warning(f"Intento {intento}: status {response.status_code} en {url}")
@@ -236,11 +236,11 @@ class TokenAttachmentDownloader:
         }
 
     def _get_with_retries(self, url: str, headers: dict = None, params: dict = None,
-                          max_retries: int = 5, wait_seconds: int = 2, stream: bool = False):
+                          max_retries: int = 3, wait_seconds: int = 2, stream: bool = False):
         for intento in range(1, max_retries + 1):
             try:
                 response = requests.get(url, headers=headers, params=params,
-                                        stream=stream, timeout=30)
+                                        stream=stream, timeout=10)
                 if response.status_code == 200:
                     return response
                 logging.warning(f"Intento {intento}: status {response.status_code} en {url}")
