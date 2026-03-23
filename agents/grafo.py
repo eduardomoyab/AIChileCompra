@@ -5,10 +5,12 @@ This module defines the complete workflow graph using LangGraph,
 connecting all nodes in the proper sequence with conditional edges.
 """
 
+import json
 import os
 import sys
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from uuid import uuid4
 
 from langgraph.graph import StateGraph, END
 
@@ -238,6 +240,142 @@ def ejecutar_catalogacion(
     logging.info(f"ROWNUM: {payload.get('ROWNUM')}")
     logging.info(f"Errores: {len(final_state.get('errores', []))}")
     logging.info(f"Warnings: {len(final_state.get('warnings', []))}")
+    logging.info(f"{'='*60}\n")
+
+    return final_state
+
+
+# ========== GRAFO SIMPLIFICADO PARA MODO TEXTO ==========
+
+def create_catalogacion_texto_graph():
+    """
+    Crea un grafo simplificado para catalogación desde texto directo.
+
+    Flujo:
+        START → campos_manuales → rag_diccionarios → consolidar_resultado → END
+
+    Los nodos de descarga/procesamiento/RAG de adjuntos se omiten porque el texto
+    ya viene como input en state['texto_directo'].
+    """
+    workflow = StateGraph(CatalogacionState)
+
+    workflow.add_node("campos_manuales", campos_manuales_node)
+    workflow.add_node("rag_diccionarios", rag_diccionarios_node)
+    workflow.add_node("consolidar_resultado", consolidar_resultado_node)
+
+    workflow.set_entry_point("campos_manuales")
+
+    workflow.add_conditional_edges(
+        "campos_manuales",
+        should_use_diccionarios,
+        {
+            "rag_diccionarios": "rag_diccionarios",
+            "consolidar_resultado": "consolidar_resultado",
+        }
+    )
+    workflow.add_edge("rag_diccionarios", "consolidar_resultado")
+    workflow.add_edge("consolidar_resultado", END)
+
+    graph = workflow.compile()
+    logging.info("✓ Grafo texto compilado exitosamente")
+    return graph
+
+
+def ejecutar_catalogacion_texto(
+    nombre_producto: str,
+    descripcion: Optional[str],
+    atributos: Optional[Dict[str, Any]],
+    categoria: str = "Computadores",
+    campos_manuales_lista: Optional[List[Dict]] = None,
+    use_diccionarios: bool = True,
+    llm_provider: Optional[str] = None,
+    diccionario_similarity_threshold: float = 0.85,
+    diccionario_llm_fallback: bool = True,
+) -> Dict[str, Any]:
+    """
+    Ejecuta catalogación desde texto directo (sin adjuntos de Mercado Público).
+
+    Construye el texto de contexto, crea un payload sintético compatible con el
+    estado del grafo y ejecuta el grafo simplificado (campos_manuales →
+    rag_diccionarios → consolidar_resultado).
+
+    Args:
+        nombre_producto: Nombre del producto (requerido)
+        descripcion: Descripción libre del producto
+        atributos: Tabla de especificaciones técnicas {campo: valor}
+        categoria: Categoría del producto
+        campos_manuales_lista: Lista de {campo, contexto} a extraer
+        use_diccionarios: Si normalizar con diccionarios
+        llm_provider: Proveedor LLM. None = usa DEFAULT_LLM_PROVIDER del .env
+        diccionario_similarity_threshold: Score mínimo para match de diccionario
+        diccionario_llm_fallback: Si usar LLM cuando no hay match sobre threshold
+
+    Returns:
+        dict: Estado final con resultado_final, errores, warnings, etc.
+    """
+    rownum = str(uuid4())[:8]
+
+    # Construir texto de contexto plano
+    partes = [f"Nombre del producto: {nombre_producto}"]
+    if descripcion:
+        partes.append(f"Descripción: {descripcion}")
+    if atributos:
+        partes.append(f"Especificaciones técnicas: {json.dumps(atributos, ensure_ascii=False)}")
+    texto_directo = "\n".join(partes)
+
+    # Payload sintético compatible con los nodos downstream (rag_diccionarios, consolidar)
+    payload = {
+        "ROWNUM": rownum,
+        "Categoria": categoria,
+        "DescripcionProductoComprador": nombre_producto,
+        "DescripcionProductoProveedor": descripcion or nombre_producto,
+        "productoname": nombre_producto,
+    }
+
+    initial_state = CatalogacionState(
+        # Input
+        codigo_cotizacion="texto",
+        rut_proveedor="texto",
+        payload=payload,
+        # Modo texto
+        texto_directo=texto_directo,
+        # Config
+        use_diccionarios=use_diccionarios,
+        llm_provider=llm_provider,
+        campos_manuales_lista=campos_manuales_lista or [],
+        diccionario_similarity_threshold=diccionario_similarity_threshold,
+        diccionario_llm_fallback=diccionario_llm_fallback,
+        # Estado de adjuntos: marcados como False (no aplica en modo texto)
+        adjuntos_descargados=False,
+        adjuntos_procesados=False,
+        adjuntos_path=None,
+        processed_path=None,
+        vector_store_created=False,
+        # resultado_adjuntos inicializado con ROWNUM para que rag_diccionarios_node lo encuentre
+        resultado_adjuntos={"ROWNUM": rownum},
+        resultado_diccionarios=None,
+        resultado_campos_manuales=None,
+        resultado_final=None,
+        errores=[],
+        warnings=[],
+        tiempo_total=None,
+        tiempos=[],
+        adjuntos_vectorstore=None,
+    )
+
+    graph = create_catalogacion_texto_graph()
+
+    logging.info(f"\n{'='*60}")
+    logging.info(f"INICIANDO CATALOGACIÓN DESDE TEXTO")
+    logging.info(f"Producto: {nombre_producto}")
+    logging.info(f"ROWNUM: {rownum}")
+    logging.info(f"{'='*60}\n")
+
+    final_state = graph.invoke(initial_state)
+
+    logging.info(f"\n{'='*60}")
+    logging.info(f"CATALOGACIÓN TEXTO FINALIZADA")
+    logging.info(f"Errores: {len(final_state.get('errores', []))}")
     logging.info(f"{'='*60}\n")
 
     return final_state
