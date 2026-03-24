@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from extraer_atributos import extraer_atributos, extraer_atributos_lote, validar_payload
 from extraer_atributos_licitaciones import extraer_atributos_licitacion
+from agents.grafo import ejecutar_catalogacion_texto
 from utils.langsmith_utils import set_langsmith
 
 from token_utils.utils import TokenPayload
@@ -199,6 +200,39 @@ class CatalogarLicitacionRequest(BaseModel):
         }
 
 
+
+
+class CatalogarTextoRequest(BaseModel):
+    """Modelo de request para catalogación desde texto directo (sin adjuntos)"""
+
+    nombre_producto: str = Field(..., description="Nombre del producto")
+    descripcion: Optional[str] = Field(None, description="Descripción libre del producto")
+    atributos: Optional[Dict[str, Any]] = Field(None, description="Especificaciones técnicas {campo: valor}")
+    categoria: str = Field("Computadores", description="Categoría del producto. Solo 'Computadores' por ahora")
+    use_diccionarios: bool = Field(True, description="Si normalizar con diccionarios técnicos")
+    llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
+    campos_manuales: Optional[List[Union[str, CampoManualItem]]] = Field(None, description="Campos a extraer. Strings simples o dicts {campo, contexto}")
+    diccionario_similarity_threshold: float = Field(0.85, description="Score mínimo de similitud coseno para aceptar match del diccionario (0-1)")
+    diccionario_llm_fallback: bool = Field(True, description="Si no hay match sobre el threshold, usar LLM para decidir entre top-3 candidatos")
+
+    @validator('categoria')
+    def validar_categoria(cls, v):
+        categorias_soportadas = ['Computadores']
+        if v not in categorias_soportadas:
+            raise ValueError(f"Categoría '{v}' no soportada. Categorías disponibles: {categorias_soportadas}")
+        return v
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "nombre_producto": "Notebook HP Pavilion 15-EH1005LA",
+                "descripcion": "Notebook con AMD Ryzen 7 5700U, 16GB RAM LPDDR4X, 512GB SSD NVMe",
+                "atributos": {"Procesador": "AMD Ryzen 7 5700U", "RAM": "16 GB LPDDR4X", "Almacenamiento": "512 GB SSD NVMe"},
+                "categoria": "Computadores",
+                "use_diccionarios": True,
+                "campos_manuales": ["Procesador", "Marca", "RAM (GB)", "Tipo RAM", "Almacenamiento (GB)"]
+            }
+        }
 
 
 class CatalogarLoteRequest(BaseModel):
@@ -444,6 +478,76 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
 
     except Exception as e:
         logging.exception(f"Error catalogando licitación: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno: {str(e)}"
+        )
+
+
+@app.post("/catalogar/texto", response_model=CatalogarResponse)
+async def catalogar_texto(request: CatalogarTextoRequest,
+                          api_key: str = Depends(require_api_key)):
+    """
+    Cataloga un producto a partir de texto directo, sin descargar adjuntos.
+
+    Recibe el nombre del producto, una descripción libre y/o una tabla de
+    especificaciones técnicas, y extrae atributos usando el mismo LLM y
+    diccionarios de normalización que `/catalogar`.
+
+    **Diferencias con /catalogar:**
+    - No requiere `codigo_cotizacion` ni `rut_proveedor`
+    - No descarga ni procesa archivos de Mercado Público
+    - El texto de entrada reemplaza al contenido de los adjuntos como contexto RAG
+
+    **Requiere header:** `X-API-Key`
+    """
+    try:
+        logging.info(f"Catalogando desde texto — producto: {request.nombre_producto[:60]}")
+
+        # Normalizar campos_manuales: List[str | CampoManualItem] → List[Dict]
+        campos_manuales_norm = []
+        for item in (request.campos_manuales or []):
+            if isinstance(item, str):
+                campos_manuales_norm.append({"campo": item, "contexto": ""})
+            else:
+                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+
+        resultado_completo = ejecutar_catalogacion_texto(
+            nombre_producto=request.nombre_producto,
+            descripcion=request.descripcion,
+            atributos=request.atributos,
+            categoria=request.categoria,
+            campos_manuales_lista=campos_manuales_norm,
+            use_diccionarios=request.use_diccionarios,
+            llm_provider=request.llm_provider,
+            diccionario_similarity_threshold=request.diccionario_similarity_threshold,
+            diccionario_llm_fallback=request.diccionario_llm_fallback,
+        )
+
+        response = CatalogarResponse(
+            success=resultado_completo.get('resultado_final') is not None,
+            resultado=resultado_completo.get('resultado_final'),
+            errores=resultado_completo.get('errores', []),
+            warnings=resultado_completo.get('warnings', []),
+            metadata={
+                "nombre_producto": request.nombre_producto,
+                "categoria": request.categoria,
+                "use_diccionarios": request.use_diccionarios,
+                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+                "modo": "texto",
+                "tiempos": resultado_completo.get('tiempos', []),
+            }
+        )
+
+        logging.info(f"Catalogación texto completada — success: {response.success}")
+        return response
+
+    except ValueError as e:
+        logging.error(f"Error de validación: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    except Exception as e:
+        logging.exception(f"Error catalogando desde texto: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno: {str(e)}"

@@ -148,6 +148,68 @@ Cataloga un producto de una **licitación pública**. Los anexos técnicos se de
 
 ---
 
+### `POST /catalogar/texto` — Texto directo (sin adjuntos)
+
+Cataloga un producto a partir de texto libre, sin descargar adjuntos de Mercado Público. Útil cuando el texto del producto ya está disponible (fichas técnicas pre-procesadas, strings de BD, etc.).
+
+Usa el mismo LLM, los mismos prompts y los mismos diccionarios de normalización que `/catalogar`, pero el texto de entrada reemplaza al contenido de los adjuntos como contexto RAG.
+
+**Request body:**
+
+```json
+{
+  "nombre_producto": "Notebook HP Pavilion 15-EH1005LA",
+  "descripcion": "Notebook con AMD Ryzen 7 5700U, 16GB RAM LPDDR4X, 512GB SSD NVMe",
+  "atributos": {
+    "Procesador": "AMD Ryzen 7 5700U",
+    "RAM": "16 GB LPDDR4X",
+    "Almacenamiento": "512 GB SSD M.2 NVMe"
+  },
+  "categoria": "Computadores",
+  "use_diccionarios": true,
+  "llm_provider": "gemini",
+  "campos_manuales": [
+    { "campo": "Procesador", "contexto": "Extrae el modelo exacto y completo." },
+    "Marca",
+    "RAM (GB)",
+    "Tipo RAM",
+    "Almacenamiento (GB)"
+  ]
+}
+```
+
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `nombre_producto` | string | **requerido** | Nombre del producto |
+| `descripcion` | string\|null | `null` | Descripción libre del producto |
+| `atributos` | objeto\|null | `null` | Tabla de especificaciones técnicas `{campo: valor}` |
+| `categoria` | string | `"Computadores"` | Solo `"Computadores"` por ahora |
+| `use_diccionarios` | bool | `true` | Normalizar con diccionarios técnicos |
+| `llm_provider` | string\|null | `null` | `"openai"`, `"gemini"` o `"deepseek"`. `null` usa `DEFAULT_LLM_PROVIDER` del `.env` |
+| `campos_manuales` | lista\|null | `null` | Campos a extraer. Strings simples o dicts `{campo, contexto}` |
+| `diccionario_similarity_threshold` | float | `0.85` | Score mínimo de similitud |
+| `diccionario_llm_fallback` | bool | `true` | LLM fallback para matches dudosos |
+
+**Response:** mismo formato que `/catalogar`. El campo `ROWNUM` en `resultado` es un UUID generado automáticamente.
+
+**Ejemplo curl:**
+
+```bash
+curl -X POST http://localhost:8000/catalogar/texto \
+  -H "x-api-key: tu-clave" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre_producto": "Notebook HP Pavilion 15-EH1005LA",
+    "descripcion": "Notebook con AMD Ryzen 7 5700U, 16GB RAM LPDDR4X, 512GB SSD NVMe",
+    "atributos": {"Procesador": "AMD Ryzen 7 5700U", "RAM": "16 GB LPDDR4X"},
+    "categoria": "Computadores",
+    "use_diccionarios": true,
+    "campos_manuales": ["Procesador", "Marca", "RAM (GB)", "Tipo RAM"]
+  }'
+```
+
+---
+
 ### `POST /set-token` — Guardar token en memoria
 
 Guarda el token Bearer de Mercado Público en memoria del servidor. Una vez seteado, todos los llamados a `/catalogar` lo usan automáticamente si no viene en el body.
@@ -297,13 +359,13 @@ El campo `ROWNUM` siempre está presente en `resultado`. El resto de los atribut
 
 ## Diferencias entre endpoints
 
-| | `/catalogar` (Compra Ágil) | `/catalogar/licitacion` |
-|---|---|---|
-| Tipo de proceso | Solicitud de cotización | Licitación pública |
-| Código requerido | `codigo_cotizacion` | `codigo_licitacion` |
-| Autenticación Mercado Público | Opcional (`token_bearer` o `/set-token`) | No requerida |
-| `use_diccionarios` default | `false` | `true` |
-| Adjuntos | Archivos del proveedor (ofertas) | Anexos técnicos y económicos |
+| | `/catalogar` (Compra Ágil) | `/catalogar/licitacion` | `/catalogar/texto` |
+|---|---|---|---|
+| Tipo de proceso | Solicitud de cotización | Licitación pública | Texto libre (sin proceso MP) |
+| Código requerido | `codigo_cotizacion` | `codigo_licitacion` | — |
+| Autenticación Mercado Público | Opcional (`token_bearer` o `/set-token`) | No requerida | No requerida |
+| `use_diccionarios` default | `false` | `true` | `true` |
+| Adjuntos | Archivos del proveedor (ofertas) | Anexos técnicos y económicos | — (texto en el body) |
 
 ---
 

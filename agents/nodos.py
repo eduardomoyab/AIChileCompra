@@ -773,72 +773,91 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
     logging.info(f"Campos a extraer: {[c['campo'] for c in campos_manuales]}")
 
     try:
-        processed_path = state.get('processed_path')
-        if not processed_path or not os.path.exists(processed_path):
-            error_msg = "No se encontró el directorio de archivos procesados"
-            state = add_error(state, error_msg)
-            logging.error(error_msg)
-            return state
+        texto_directo = state.get('texto_directo')
 
-        txt_files = [
-            os.path.join(processed_path, f)
-            for f in os.listdir(processed_path)
-            if f.endswith('.txt') and f != 'skipped_files.txt'
-        ]
+        if texto_directo:
+            # --- MODO TEXTO: sin FAISS, el texto completo es el contexto ---
+            logging.info("✓ Modo texto_directo — saltando FAISS, usando texto como contexto")
+            state = add_tiempo(state, _NODO, "faiss", "FAISS omitido (modo texto)", 0.0)
 
-        if not txt_files:
-            error_msg = f"No se encontraron archivos procesados en {processed_path}"
-            state = add_error(state, error_msg)
-            logging.error(error_msg)
-            return state
+            t0 = time.time()
+            campos_con_docs = []
+            for item in campos_manuales:
+                campos_con_docs.append({
+                    "campo": item["campo"],
+                    "contexto": item.get("contexto", ""),
+                    "fragmentos": texto_directo,
+                })
+            state = add_tiempo(state, _NODO, "searches", "Contexto directo (sin similarity search)", time.time() - t0)
 
-        # Sub-fase 4a: reutilizar FAISS de nodo_3 si está disponible
-        t0 = time.time()
-        vectorstore = state.get('adjuntos_vectorstore')
-        if vectorstore is not None:
-            logging.info(f"✓ Reutilizando FAISS compartido de nodo_3")
         else:
-            metadatas = [
-                {
-                    "codigo_cotizacion": state['codigo_cotizacion'],
-                    "rut_proveedor": state['rut_proveedor'],
-                    "source_file": os.path.basename(f)
-                }
-                for f in txt_files
-            ]
-            chunk_size = int(os.getenv('CAMPOS_MANUALES_CHUNK_SIZE', '200'))
-            chunk_overlap = int(os.getenv('CAMPOS_MANUALES_CHUNK_OVERLAP', '50'))
-            vectorstore = create_faiss_from_files(
-                txt_files, metadatas,
-                chunk_size=chunk_size, chunk_overlap=chunk_overlap
-            )
-            logging.info(f"✓ FAISS creado ({len(txt_files)} archivos, chunk={chunk_size})")
-        state = add_tiempo(state, _NODO, "faiss", "FAISS listo", time.time() - t0)
+            # --- MODO ADJUNTOS: flujo original con FAISS ---
+            processed_path = state.get('processed_path')
+            if not processed_path or not os.path.exists(processed_path):
+                error_msg = "No se encontró el directorio de archivos procesados"
+                state = add_error(state, error_msg)
+                logging.error(error_msg)
+                return state
 
-        # Sub-fase 4b: similarity_search por campo (gratis, FAISS en memoria)
-        t0 = time.time()
-        k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
-        campos_con_docs = []
-        for item in campos_manuales:
-            campo = item["campo"]
-            contexto_extra = item.get("contexto", "")
-            k_campo = k + 1 if any(kw in campo.lower() for kw in ["procesador", "cpu", "processor"]) else k
-            try:
-                docs = vectorstore.similarity_search(campo, k=k_campo)
-                fragmentos = "\n\n".join([
-                    f"  Fragmento {i+1}:\n  {doc.page_content}"
-                    for i, doc in enumerate(docs)
-                ]) if docs else "  (sin documentos relevantes encontrados)"
-            except Exception as e:
-                logging.warning(f"  Error buscando '{campo}': {e}")
-                fragmentos = "  (error en búsqueda)"
-            campos_con_docs.append({
-                "campo": campo,
-                "contexto": contexto_extra,
-                "fragmentos": fragmentos,
-            })
-        logging.info(f"  {len(campos_con_docs)} campos con documentos RAG individuales")
-        state = add_tiempo(state, _NODO, "searches", "Similarity searches", time.time() - t0)
+            txt_files = [
+                os.path.join(processed_path, f)
+                for f in os.listdir(processed_path)
+                if f.endswith('.txt') and f != 'skipped_files.txt'
+            ]
+
+            if not txt_files:
+                error_msg = f"No se encontraron archivos procesados en {processed_path}"
+                state = add_error(state, error_msg)
+                logging.error(error_msg)
+                return state
+
+            # Sub-fase 4a: reutilizar FAISS de nodo_3 si está disponible
+            t0 = time.time()
+            vectorstore = state.get('adjuntos_vectorstore')
+            if vectorstore is not None:
+                logging.info(f"✓ Reutilizando FAISS compartido de nodo_3")
+            else:
+                metadatas = [
+                    {
+                        "codigo_cotizacion": state['codigo_cotizacion'],
+                        "rut_proveedor": state['rut_proveedor'],
+                        "source_file": os.path.basename(f)
+                    }
+                    for f in txt_files
+                ]
+                chunk_size = int(os.getenv('CAMPOS_MANUALES_CHUNK_SIZE', '200'))
+                chunk_overlap = int(os.getenv('CAMPOS_MANUALES_CHUNK_OVERLAP', '50'))
+                vectorstore = create_faiss_from_files(
+                    txt_files, metadatas,
+                    chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                )
+                logging.info(f"✓ FAISS creado ({len(txt_files)} archivos, chunk={chunk_size})")
+            state = add_tiempo(state, _NODO, "faiss", "FAISS listo", time.time() - t0)
+
+            # Sub-fase 4b: similarity_search por campo (gratis, FAISS en memoria)
+            t0 = time.time()
+            k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
+            campos_con_docs = []
+            for item in campos_manuales:
+                campo = item["campo"]
+                contexto_extra = item.get("contexto", "")
+                k_campo = k + 1 if any(kw in campo.lower() for kw in ["procesador", "cpu", "processor"]) else k
+                try:
+                    docs = vectorstore.similarity_search(campo, k=k_campo)
+                    fragmentos = "\n\n".join([
+                        f"  Fragmento {i+1}:\n  {doc.page_content}"
+                        for i, doc in enumerate(docs)
+                    ]) if docs else "  (sin documentos relevantes encontrados)"
+                except Exception as e:
+                    logging.warning(f"  Error buscando '{campo}': {e}")
+                    fragmentos = "  (error en búsqueda)"
+                campos_con_docs.append({
+                    "campo": campo,
+                    "contexto": contexto_extra,
+                    "fragmentos": fragmentos,
+                })
+            logging.info(f"  {len(campos_con_docs)} campos con documentos RAG individuales")
+            state = add_tiempo(state, _NODO, "searches", "Similarity searches", time.time() - t0)
 
         # Sub-fase 4c: 1 sola llamada LLM con contexto por campo
         t0 = time.time()

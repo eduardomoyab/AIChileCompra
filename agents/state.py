@@ -63,6 +63,7 @@ class CatalogacionState(TypedDict, total=False):
     campos_manuales_lista: Optional[List[Dict]]  # Lista de {campo, contexto} a extraer en paralelo
     diccionario_similarity_threshold: Optional[float]  # Score mínimo para aceptar match (default 0.85)
     diccionario_llm_fallback: Optional[bool]  # Si usar LLM cuando no hay match sobre threshold
+    texto_directo: Optional[str]  # Texto plano del producto (modo /catalogar/texto, sin adjuntos)
 
     # ========== PROCESSING STATE ==========
     adjuntos_descargados: bool
