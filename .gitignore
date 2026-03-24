@@ -72,6 +72,36 @@ output*.json
 *.csv
 tokens_input_output.xlsx
 
+# Diccionarios genéricos (sí van al repo)
+!diccionarios/attribute_dictionary.csv
+!diccionarios/attribute_complement.csv
+
+# Scripts locales de evaluación, extracción y testing (no van al repo)
+evaluar_catalogacion.py
+evaluar_catalogacion_paralelo.py
+evaluar_catalogacion_*.log
+evaluacion_catalogacion_*.xlsx
+evaluacion_recalculada_*.xlsx
+extraer_atributos.py
+extraer_atributos_licitaciones.py
+catalogar_licitaciones_batch.py
+recalcular_excel.py
+test_paralelo.py
+test_serie.py
+analysis_eval.py
+response.json
+error.txt
+
+# Datos de muestra locales
+sample_OC_*.csv
+
+# Claude Code config
+.claude/
+
+# Tesis / material académico local
+"Tesis CA Computadores/"
+Tesis CA Computadores/
+
 # OS
 .DS_Store
 Thumbs.db

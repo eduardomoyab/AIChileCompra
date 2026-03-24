@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 # Añadir el directorio actual al path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agents.grafo_comp import ejecutar_catalogacion
+from agents.grafo import ejecutar_catalogacion
 
 # Cargar variables de entorno
 load_dotenv()
@@ -68,7 +68,11 @@ def extraer_atributos(
     codigo_cotizacion: str,
     rut_proveedor: str,
     use_diccionarios: bool = True,
-    llm_provider: str = None
+    llm_provider: str = None,
+    downloader: Any = None,
+    campos_manuales_lista: List[Dict] = None,
+    diccionario_similarity_threshold: float = 0.85,
+    diccionario_llm_fallback: bool = True,
 ) -> Dict[str, Any]:
     """
     Extrae atributos de un producto usando el flujo completo de catalogación.
@@ -135,7 +139,11 @@ def extraer_atributos(
             rut_proveedor=rut_proveedor,
             payload=payload,
             use_diccionarios=use_diccionarios,
-            llm_provider=llm_provider
+            llm_provider=llm_provider,
+            downloader=downloader,
+            campos_manuales_lista=campos_manuales_lista,
+            diccionario_similarity_threshold=diccionario_similarity_threshold,
+            diccionario_llm_fallback=diccionario_llm_fallback,
         )
     else:
         raise ValueError(

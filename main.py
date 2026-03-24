@@ -7,13 +7,15 @@ en licitaciones públicas usando LLM, RAG y LangGraph.
 
 import os
 import sys
+import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, validator
 from dotenv import load_dotenv
 
@@ -21,10 +23,31 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from extraer_atributos import extraer_atributos, extraer_atributos_lote, validar_payload
+from extraer_atributos_licitaciones import extraer_atributos_licitacion
+from agents.grafo import ejecutar_catalogacion_texto
+from utils.langsmith_utils import set_langsmith
+
+from token_utils.utils import TokenPayload
 
 # Cargar variables de entorno
 load_dotenv()
 
+# Token persistido en disco — compartido entre todos los workers de Gunicorn
+_TOKEN_FILE = os.path.join(os.getenv("ATTACHMENTS_OUTPUT_PATH", "attachments"), ".token_store.json")
+
+def _read_token() -> dict:
+    try:
+        with open(_TOKEN_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _write_token(data: dict):
+    os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
+    with open(_TOKEN_FILE, "w") as f:
+        json.dump(data, f)
+
+#set_langsmith()
 # Configuración de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -49,9 +72,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Key desde .env
-API_KEY = os.getenv("API_KEY", "your-secret-api-key-here")
+# API Keys desde .env (soporta múltiples separadas por coma)
+_raw_keys = os.getenv("API_KEY", "your-secret-api-key-here")
+API_KEYS = {k.strip() for k in _raw_keys.split(",") if k.strip()}
 
+api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
+
+async def require_api_key(x_api_key: Optional[str] = Depends(api_key_header)):
+    if not x_api_key or x_api_key not in API_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key inválida"
+        )
+    return x_api_key
 
 # ========== SECURITY ==========
 
@@ -68,7 +101,7 @@ async def verify_api_key(x_api_key: str = Header(...)):
     Example:
         curl -H "X-API-Key: your-api-key" http://localhost:8000/catalogar
     """
-    if x_api_key != API_KEY:
+    if x_api_key not in API_KEYS:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="API Key inválida"
@@ -108,14 +141,35 @@ class ProductoPayload(BaseModel):
         }
 
 
+class CampoManualItem(BaseModel):
+    """Campo manual con instrucciones opcionales para el agente de extracción"""
+    campo: str = Field(..., description="Nombre del campo a extraer (ej: 'Procesador')")
+    contexto: str = Field("", description="Instrucciones adicionales para el agente de este campo")
+
+
 class CatalogarRequest(BaseModel):
-    """Modelo de request para catalogación de un producto"""
+    """Modelo de request para catalogación de un producto (Compra Ágil)"""
 
     payload: ProductoPayload = Field(..., description="Datos del producto a catalogar")
     codigo_cotizacion: str = Field(..., description="Código de la solicitud de cotización")
     rut_proveedor: str = Field(..., description="RUT del proveedor")
+    use_diccionarios: bool = Field(False, description="Si usar normalización con diccionarios")
+    llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
+    campos_manuales: Optional[List[Union[str, CampoManualItem]]] = Field(None, description="Lista de campos a extraer. Puede ser strings simples o dicts con {campo, contexto}")
+    diccionario_similarity_threshold: float = Field(0.85, description="Score mínimo de similitud coseno para aceptar match del diccionario (0-1)")
+    diccionario_llm_fallback: bool = Field(True, description="Si no hay match sobre el threshold, usar LLM para decidir entre top-3 candidatos")
+    token_bearer: Optional[str] = Field(None, description="Token Bearer de Mercado Público. Si se provee, usa la API autenticada (servicios-compra-agil) en lugar del Buscador público.")
+
+
+class CatalogarLicitacionRequest(BaseModel):
+    """Modelo de request para catalogación de un producto de Licitación"""
+
+    payload: ProductoPayload = Field(..., description="Datos del producto a catalogar")
+    codigo_licitacion: str = Field(..., description="Código de la licitación (ej: 1234-567-LE24)")
+    rut_proveedor: str = Field(..., description="RUT del proveedor")
     use_diccionarios: bool = Field(True, description="Si usar normalización con diccionarios")
     llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
+    campos_manuales: Optional[List[str]] = Field(None, description="Lista de campos adicionales a extraer (ej: ['Pantalla (Pulgadas)', 'Procesador'])")
 
     @validator('llm_provider')
     def validar_llm_provider(cls, v):
@@ -138,10 +192,45 @@ class CatalogarRequest(BaseModel):
                     "DescripcionProductoProveedor": "NOTEBOOK HP PAVILION",
                     "productoname": "Notebook, laptop o computador portátil excepto Tablet PC"
                 },
-                "codigo_cotizacion": "12345678",
+                "codigo_licitacion": "1234-567-LE24",
                 "rut_proveedor": "76123456-7",
                 "use_diccionarios": True,
                 "llm_provider": "gemini"
+            }
+        }
+
+
+
+
+class CatalogarTextoRequest(BaseModel):
+    """Modelo de request para catalogación desde texto directo (sin adjuntos)"""
+
+    nombre_producto: str = Field(..., description="Nombre del producto")
+    descripcion: Optional[str] = Field(None, description="Descripción libre del producto")
+    atributos: Optional[Dict[str, Any]] = Field(None, description="Especificaciones técnicas {campo: valor}")
+    categoria: str = Field("Computadores", description="Categoría del producto. Solo 'Computadores' por ahora")
+    use_diccionarios: bool = Field(True, description="Si normalizar con diccionarios técnicos")
+    llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
+    campos_manuales: Optional[List[Union[str, CampoManualItem]]] = Field(None, description="Campos a extraer. Strings simples o dicts {campo, contexto}")
+    diccionario_similarity_threshold: float = Field(0.85, description="Score mínimo de similitud coseno para aceptar match del diccionario (0-1)")
+    diccionario_llm_fallback: bool = Field(True, description="Si no hay match sobre el threshold, usar LLM para decidir entre top-3 candidatos")
+
+    @validator('categoria')
+    def validar_categoria(cls, v):
+        categorias_soportadas = ['Computadores']
+        if v not in categorias_soportadas:
+            raise ValueError(f"Categoría '{v}' no soportada. Categorías disponibles: {categorias_soportadas}")
+        return v
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "nombre_producto": "Notebook HP Pavilion 15-EH1005LA",
+                "descripcion": "Notebook con AMD Ryzen 7 5700U, 16GB RAM LPDDR4X, 512GB SSD NVMe",
+                "atributos": {"Procesador": "AMD Ryzen 7 5700U", "RAM": "16 GB LPDDR4X", "Almacenamiento": "512 GB SSD NVMe"},
+                "categoria": "Computadores",
+                "use_diccionarios": True,
+                "campos_manuales": ["Procesador", "Marca", "RAM (GB)", "Tipo RAM", "Almacenamiento (GB)"]
             }
         }
 
@@ -230,8 +319,9 @@ async def health_check():
     )
 
 
-@app.post("/catalogar", response_model=CatalogarResponse, dependencies=[Depends(verify_api_key)])
-async def catalogar_producto(request: CatalogarRequest):
+@app.post("/catalogar", response_model=CatalogarResponse)
+async def catalogar_producto(request: CatalogarRequest,
+                             api_key: str = Depends(require_api_key)):
     """
     Cataloga un producto individual.
 
@@ -254,13 +344,36 @@ async def catalogar_producto(request: CatalogarRequest):
     try:
         logging.info(f"Catalogando producto - Cotización: {request.codigo_cotizacion}, Proveedor: {request.rut_proveedor}")
 
+        # Seleccionar downloader: payload > token en disco > sin token
+        token = request.token_bearer or _read_token().get("access_token")
+        downloader = None
+        if token:
+            from utils.get_attachments import TokenAttachmentDownloader
+            downloader = TokenAttachmentDownloader(token)
+            fuente = "payload" if request.token_bearer else "set-token"
+            logging.info(f"Usando TokenAttachmentDownloader (token desde {fuente})")
+        else:
+            logging.info("Usando BuscadorAttachmentDownloader (API pública)")
+
+        # Normalizar campos_manuales: List[str | CampoManualItem] → List[Dict]
+        campos_manuales_norm = []
+        for item in (request.campos_manuales or []):
+            if isinstance(item, str):
+                campos_manuales_norm.append({"campo": item, "contexto": ""})
+            else:
+                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+
         # Ejecutar catalogación
         resultado_completo = extraer_atributos(
             payload=request.payload.dict(),
             codigo_cotizacion=request.codigo_cotizacion,
             rut_proveedor=request.rut_proveedor,
             use_diccionarios=request.use_diccionarios,
-            llm_provider=request.llm_provider
+            llm_provider=request.llm_provider,
+            downloader=downloader,
+            campos_manuales_lista=campos_manuales_norm,
+            diccionario_similarity_threshold=request.diccionario_similarity_threshold,
+            diccionario_llm_fallback=request.diccionario_llm_fallback,
         )
 
         # Preparar response
@@ -276,7 +389,8 @@ async def catalogar_producto(request: CatalogarRequest):
                 "adjuntos_descargados": resultado_completo.get('adjuntos_descargados', False),
                 "adjuntos_procesados": resultado_completo.get('adjuntos_procesados', False),
                 "use_diccionarios": request.use_diccionarios,
-                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini")
+                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+                "tiempos": resultado_completo.get('tiempos', []),
             }
         )
 
@@ -296,63 +410,221 @@ async def catalogar_producto(request: CatalogarRequest):
         )
 
 
-@app.post("/catalogar/lote", response_model=List[CatalogarResponse], dependencies=[Depends(verify_api_key)])
-async def catalogar_lote(request: CatalogarLoteRequest):
+@app.post("/catalogar/licitacion", response_model=CatalogarResponse)
+async def catalogar_licitacion(request: CatalogarLicitacionRequest,
+                                api_key: str = Depends(require_api_key)):
     """
-    Cataloga un lote de productos.
+    Cataloga un producto de LICITACIÓN.
 
-    Procesa múltiples productos secuencialmente, cada uno con el flujo completo
-    de catalogación.
+    Realiza el flujo completo:
+    1. Descarga adjuntos desde Mercado Público (anexos técnicos y económicos)
+    2. Procesa adjuntos (extracción de texto con OCR si es necesario)
+    3. Extrae atributos usando un LLM único con RAG sobre adjuntos
+    4. Normaliza con diccionarios (opcional)
 
     **Requiere header:** `X-API-Key`
 
+    **Diferencias con /catalogar (Compra Ágil):**
+    - No requiere autenticación (licitaciones son públicas)
+    - Usa un único LLM en lugar de sistema de agentes
+    - Descarga anexos técnicos y económicos
+
     **Returns:**
-    Lista de resultados, uno por cada producto en el lote.
+    - `success`: Si la catalogación fue exitosa
+    - `resultado`: Diccionario con todos los atributos extraídos
+    - `errores`: Lista de errores encontrados
+    - `warnings`: Lista de advertencias
+    - `metadata`: Información adicional del proceso
     """
     try:
-        logging.info(f"Catalogando lote de {len(request.payloads)} productos")
+        logging.info(f"Catalogando licitación - Código: {request.codigo_licitacion}, Proveedor: {request.rut_proveedor}")
 
-        # Convertir payloads a dict
-        payloads_dict = [p.dict() for p in request.payloads]
-
-        # Ejecutar catalogación en lote
-        resultados_completos = extraer_atributos_lote(
-            payloads=payloads_dict,
-            codigo_cotizacion=request.codigo_cotizacion,
+        # Ejecutar catalogación de licitación
+        resultado_completo = extraer_atributos_licitacion(
+            payload=request.payload.dict(),
+            codigo_licitacion=request.codigo_licitacion,
             rut_proveedor=request.rut_proveedor,
             use_diccionarios=request.use_diccionarios,
-            llm_provider=request.llm_provider
+            llm_provider=request.llm_provider,
+            campos_manuales=request.campos_manuales,
+            downloader=None  # No se usa para licitaciones
         )
 
-        # Preparar responses
-        responses = []
-        for i, (resultado_completo, payload) in enumerate(zip(resultados_completos, request.payloads), 1):
-            response = CatalogarResponse(
-                success=resultado_completo.get('resultado_final') is not None,
-                resultado=resultado_completo.get('resultado_final'),
-                errores=resultado_completo.get('errores', []),
-                warnings=resultado_completo.get('warnings', []),
-                metadata={
-                    "producto_numero": i,
-                    "categoria": payload.Categoria
-                }
-            )
-            responses.append(response)
+        # Preparar response
+        response = CatalogarResponse(
+            success=resultado_completo.get('resultado_final') is not None,
+            resultado=resultado_completo.get('resultado_final'),
+            errores=resultado_completo.get('errores', []),
+            warnings=resultado_completo.get('warnings', []),
+            metadata={
+                "codigo_licitacion": request.codigo_licitacion,
+                "rut_proveedor": request.rut_proveedor,
+                "categoria": request.payload.Categoria,
+                "adjuntos_descargados": resultado_completo.get('adjuntos_descargados', False),
+                "adjuntos_procesados": resultado_completo.get('adjuntos_procesados', False),
+                "use_diccionarios": request.use_diccionarios,
+                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+                "tipo": "licitacion"
+            }
+        )
 
-        logging.info(f"Lote completado - {len(responses)} productos procesados")
+        logging.info(f"Catalogación licitación completada - Código: {request.codigo_licitacion}, Success: {response.success}")
 
-        return responses
+        return response
 
     except ValueError as e:
         logging.error(f"Error de validación: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     except Exception as e:
-        logging.exception(f"Error catalogando lote: {e}")
+        logging.exception(f"Error catalogando licitación: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno: {str(e)}"
         )
+
+
+@app.post("/catalogar/texto", response_model=CatalogarResponse)
+async def catalogar_texto(request: CatalogarTextoRequest,
+                          api_key: str = Depends(require_api_key)):
+    """
+    Cataloga un producto a partir de texto directo, sin descargar adjuntos.
+
+    Recibe el nombre del producto, una descripción libre y/o una tabla de
+    especificaciones técnicas, y extrae atributos usando el mismo LLM y
+    diccionarios de normalización que `/catalogar`.
+
+    **Diferencias con /catalogar:**
+    - No requiere `codigo_cotizacion` ni `rut_proveedor`
+    - No descarga ni procesa archivos de Mercado Público
+    - El texto de entrada reemplaza al contenido de los adjuntos como contexto RAG
+
+    **Requiere header:** `X-API-Key`
+    """
+    try:
+        logging.info(f"Catalogando desde texto — producto: {request.nombre_producto[:60]}")
+
+        # Normalizar campos_manuales: List[str | CampoManualItem] → List[Dict]
+        campos_manuales_norm = []
+        for item in (request.campos_manuales or []):
+            if isinstance(item, str):
+                campos_manuales_norm.append({"campo": item, "contexto": ""})
+            else:
+                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+
+        resultado_completo = ejecutar_catalogacion_texto(
+            nombre_producto=request.nombre_producto,
+            descripcion=request.descripcion,
+            atributos=request.atributos,
+            categoria=request.categoria,
+            campos_manuales_lista=campos_manuales_norm,
+            use_diccionarios=request.use_diccionarios,
+            llm_provider=request.llm_provider,
+            diccionario_similarity_threshold=request.diccionario_similarity_threshold,
+            diccionario_llm_fallback=request.diccionario_llm_fallback,
+        )
+
+        response = CatalogarResponse(
+            success=resultado_completo.get('resultado_final') is not None,
+            resultado=resultado_completo.get('resultado_final'),
+            errores=resultado_completo.get('errores', []),
+            warnings=resultado_completo.get('warnings', []),
+            metadata={
+                "nombre_producto": request.nombre_producto,
+                "categoria": request.categoria,
+                "use_diccionarios": request.use_diccionarios,
+                "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+                "modo": "texto",
+                "tiempos": resultado_completo.get('tiempos', []),
+            }
+        )
+
+        logging.info(f"Catalogación texto completada — success: {response.success}")
+        return response
+
+    except ValueError as e:
+        logging.error(f"Error de validación: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    except Exception as e:
+        logging.exception(f"Error catalogando desde texto: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno: {str(e)}"
+        )
+
+
+@app.post("/set-token")
+async def set_token(payload: TokenPayload, api_key: str = Depends(require_api_key)):
+    _write_token(payload.model_dump())
+    return {"status": "ok"}
+
+@app.get("/get-token")
+async def get_token(api_key: str = Depends(require_api_key)):
+    data = _read_token()
+    if not data:
+        raise HTTPException(status_code=404, detail="Token no disponible")
+    return data
+
+
+
+# @app.post("/catalogar/lote", response_model=List[CatalogarResponse], dependencies=[Depends(verify_api_key)])
+# async def catalogar_lote(request: CatalogarLoteRequest):
+#     """
+#     Cataloga un lote de productos.
+#
+#     Procesa múltiples productos secuencialmente, cada uno con el flujo completo
+#     de catalogación.
+#
+#     **Requiere header:** `X-API-Key`
+#
+#     **Returns:**
+#     Lista de resultados, uno por cada producto en el lote.
+#     """
+#     try:
+#         logging.info(f"Catalogando lote de {len(request.payloads)} productos")
+#
+#         # Convertir payloads a dict
+#         payloads_dict = [p.dict() for p in request.payloads]
+#
+#         # Ejecutar catalogación en lote
+#         resultados_completos = extraer_atributos_lote(
+#             payloads=payloads_dict,
+#             codigo_cotizacion=request.codigo_cotizacion,
+#             rut_proveedor=request.rut_proveedor,
+#             use_diccionarios=request.use_diccionarios,
+#             llm_provider=request.llm_provider
+#         )
+#
+#         # Preparar responses
+#         responses = []
+#         for i, (resultado_completo, payload) in enumerate(zip(resultados_completos, request.payloads), 1):
+#             response = CatalogarResponse(
+#                 success=resultado_completo.get('resultado_final') is not None,
+#                 resultado=resultado_completo.get('resultado_final'),
+#                 errores=resultado_completo.get('errores', []),
+#                 warnings=resultado_completo.get('warnings', []),
+#                 metadata={
+#                     "producto_numero": i,
+#                     "categoria": payload.Categoria
+#                 }
+#             )
+#             responses.append(response)
+#
+#         logging.info(f"Lote completado - {len(responses)} productos procesados")
+#
+#         return responses
+#
+#     except ValueError as e:
+#         logging.error(f"Error de validación: {e}")
+#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+#
+#     except Exception as e:
+#         logging.exception(f"Error catalogando lote: {e}")
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"Error interno: {str(e)}"
+#         )
 
 
 # ========== STARTUP & SHUTDOWN ==========
@@ -365,7 +637,16 @@ async def startup_event():
     logging.info("Versión: 1.0.0")
     logging.info("="*80)
     logging.info(f"LLM Provider por defecto: {os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')}")
-    logging.info(f"API Key configurada: {'✓' if API_KEY != 'your-secret-api-key-here' else '✗'}")
+    logging.info(f"API Keys configuradas: {len(API_KEYS)} ({'✓' if 'your-secret-api-key-here' not in API_KEYS else '✗'})")
+
+    # Pre-cargar FAISS diccionarios: desde disco si existen, si no construye y persiste
+    try:
+        from agents.retriever_diccionario import warm_dictionaries
+        warm_dictionaries()
+        logging.info("✓ FAISS diccionarios listos")
+    except Exception as e:
+        logging.warning(f"No se pudo pre-cargar FAISS diccionarios: {e}")
+
     logging.info("API iniciada correctamente")
 
 
@@ -387,10 +668,11 @@ if __name__ == "__main__":
     logging.info(f"\nIniciando servidor en http://{HOST}:{PORT}")
     logging.info(f"Documentación en http://{HOST}:{PORT}/docs\n")
 
+    reload = os.getenv("DEV_RELOAD", "false").lower() == "true"
     uvicorn.run(
         "main:app",
         host=HOST,
         port=PORT,
-        reload=True,  # Auto-reload en desarrollo
+        reload=reload,  # Solo en desarrollo: DEV_RELOAD=true
         log_level="info"
     )

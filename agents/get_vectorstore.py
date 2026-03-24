@@ -1,292 +1,215 @@
 import os
 from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_chroma import Chroma
-from langchain_core.documents import Document
 
-# Cargar variables de entorno
+# Cargar variables de entorno PRIMERO
 load_dotenv()
 
+# Fix para conflicto de OpenMP con FAISS
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-class VectorStoreManager:
-    """Gestor de vector store con embeddings de Google"""
-
-    def __init__(self,
-                 collection_name: str = "default_collection",
-                 persist_directory: str = "./chroma_db",
-                 embedding_model: str = "models/text-embedding-004"):
-        """
-        Inicializa el gestor de vector store.
-
-        Args:
-            collection_name (str): Nombre de la colección en el vector store
-            persist_directory (str): Directorio donde persistir el vector store
-            embedding_model (str): Modelo de embeddings de Google a usar
-        """
-        self.collection_name = collection_name
-        self.persist_directory = persist_directory
-        self.embedding_model_name = embedding_model
-
-        # Validar API key
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY no está configurada en el archivo .env")
-
-        # Inicializar modelo de embeddings
-        self.embeddings = GoogleGenerativeAIEmbeddings(
-            model=embedding_model,
-            google_api_key=api_key
-        )
-
-        # Inicializar o cargar vector store
-        self.vectorstore = None
-        self._load_or_create_vectorstore()
-
-    def _load_or_create_vectorstore(self):
-        """Carga el vector store existente o crea uno nuevo"""
-        persist_path = os.path.join(self.persist_directory, self.collection_name)
-
-        if os.path.exists(persist_path):
-            # Cargar vector store existente
-            self.vectorstore = Chroma(
-                collection_name=self.collection_name,
-                embedding_function=self.embeddings,
-                persist_directory=self.persist_directory
-            )
-        else:
-            # Crear nuevo vector store
-            self.vectorstore = Chroma(
-                collection_name=self.collection_name,
-                embedding_function=self.embeddings,
-                persist_directory=self.persist_directory
-            )
-
-    def add_documents(self,
-                     texts: List[str],
-                     metadatas: Optional[List[Dict[str, Any]]] = None,
-                     ids: Optional[List[str]] = None) -> List[str]:
-        """
-        Añade documentos al vector store.
-
-        Args:
-            texts (List[str]): Lista de textos a añadir
-            metadatas (List[Dict], optional): Metadata para cada texto
-            ids (List[str], optional): IDs personalizados para cada documento
-
-        Returns:
-            List[str]: IDs de los documentos añadidos
-
-        Example:
-            >>> manager = VectorStoreManager("my_collection")
-            >>> texts = ["Texto 1", "Texto 2"]
-            >>> metadatas = [
-            >>>     {"codigo_cotizacion": "12345", "rut_proveedor": "76123456-7"},
-            >>>     {"codigo_cotizacion": "12346", "rut_proveedor": "76123456-8"}
-            >>> ]
-            >>> ids = manager.add_documents(texts, metadatas)
-        """
-        # Crear documentos de LangChain
-        documents = []
-        for i, text in enumerate(texts):
-            metadata = metadatas[i] if metadatas and i < len(metadatas) else {}
-            doc = Document(page_content=text, metadata=metadata)
-            documents.append(doc)
-
-        # Añadir al vector store
-        doc_ids = self.vectorstore.add_documents(documents, ids=ids)
-
-        return doc_ids
-
-    def add_documents_from_files(self,
-                                file_paths: List[str],
-                                metadatas: Optional[List[Dict[str, Any]]] = None) -> List[str]:
-        """
-        Añade documentos desde archivos de texto al vector store.
-
-        Args:
-            file_paths (List[str]): Rutas a los archivos de texto
-            metadatas (List[Dict], optional): Metadata para cada archivo
-
-        Returns:
-            List[str]: IDs de los documentos añadidos
-
-        Example:
-            >>> manager = VectorStoreManager("processed_attachments")
-            >>> file_paths = ["processed/file1.txt", "processed/file2.txt"]
-            >>> metadatas = [
-            >>>     {"codigo_cotizacion": "12345", "source_file": "file1.txt"},
-            >>>     {"codigo_cotizacion": "12346", "source_file": "file2.txt"}
-            >>> ]
-            >>> ids = manager.add_documents_from_files(file_paths, metadatas)
-        """
-        texts = []
-        final_metadatas = []
-
-        for i, file_path in enumerate(file_paths):
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    texts.append(content)
-
-                    # Combinar metadata proporcionada con metadata del archivo
-                    metadata = metadatas[i] if metadatas and i < len(metadatas) else {}
-                    metadata['source_file'] = os.path.basename(file_path)
-                    metadata['file_path'] = file_path
-                    final_metadatas.append(metadata)
-
-            except Exception as e:
-                print(f"Error reading file {file_path}: {e}")
-                continue
-
-        if not texts:
-            return []
-
-        return self.add_documents(texts, final_metadatas)
-
-    def similarity_search(self,
-                         query: str,
-                         k: int = 4,
-                         filter: Optional[Dict[str, Any]] = None) -> List[Document]:
-        """
-        Busca documentos similares a la consulta.
-
-        Args:
-            query (str): Texto de búsqueda
-            k (int): Número de documentos a retornar
-            filter (Dict, optional): Filtros de metadata
-
-        Returns:
-            List[Document]: Documentos más similares
-
-        Example:
-            >>> manager = VectorStoreManager("my_collection")
-            >>> results = manager.similarity_search(
-            >>>     "computadores portátiles",
-            >>>     k=5,
-            >>>     filter={"codigo_cotizacion": "12345"}
-            >>> )
-        """
-        if filter:
-            return self.vectorstore.similarity_search(query, k=k, filter=filter)
-        return self.vectorstore.similarity_search(query, k=k)
-
-    def similarity_search_with_score(self,
-                                    query: str,
-                                    k: int = 4,
-                                    filter: Optional[Dict[str, Any]] = None) -> List[tuple]:
-        """
-        Busca documentos similares con scores de similitud.
-
-        Args:
-            query (str): Texto de búsqueda
-            k (int): Número de documentos a retornar
-            filter (Dict, optional): Filtros de metadata
-
-        Returns:
-            List[tuple]: Lista de tuplas (Document, score)
-        """
-        if filter:
-            return self.vectorstore.similarity_search_with_score(query, k=k, filter=filter)
-        return self.vectorstore.similarity_search_with_score(query, k=k)
-
-    def get_retriever(self,
-                     search_type: str = "similarity",
-                     k: int = 4,
-                     filter: Optional[Dict[str, Any]] = None):
-        """
-        Obtiene un retriever para usar con chains de LangChain.
-
-        Args:
-            search_type (str): Tipo de búsqueda ('similarity', 'mmr')
-            k (int): Número de documentos a retornar
-            filter (Dict, optional): Filtros de metadata
-
-        Returns:
-            VectorStoreRetriever: Retriever configurado
-
-        Example:
-            >>> manager = VectorStoreManager("my_collection")
-            >>> retriever = manager.get_retriever(search_type="mmr", k=5)
-            >>> # Usar con un chain
-            >>> from langchain.chains import RetrievalQA
-            >>> qa_chain = RetrievalQA.from_llm(llm=llm, retriever=retriever)
-        """
-        search_kwargs = {"k": k}
-        if filter:
-            search_kwargs["filter"] = filter
-
-        return self.vectorstore.as_retriever(
-            search_type=search_type,
-            search_kwargs=search_kwargs
-        )
-
-    def delete_collection(self):
-        """Elimina toda la colección del vector store"""
-        self.vectorstore.delete_collection()
-
-    def get_collection_count(self) -> int:
-        """Retorna el número de documentos en la colección"""
-        return self.vectorstore._collection.count()
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+# CHROMA DESHABILITADO - Solo usamos FAISS ahora
+# from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 
-def create_vectorstore(collection_name: str,
-                      texts: List[str],
-                      metadatas: Optional[List[Dict[str, Any]]] = None,
-                      persist_directory: str = "./chroma_db",
-                      embedding_model: str = "models/text-embedding-004") -> VectorStoreManager:
+def create_faiss_from_files(
+    file_paths: List[str],
+    metadatas: Optional[List[Dict[str, Any]]] = None,
+    embedding_model: str = "text-embedding-3-small",
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None
+) -> FAISS:
     """
-    Función helper para crear un vector store y añadir documentos en un solo paso.
+    Crea un vector store FAISS en memoria desde archivos de texto.
+    NO persiste nada en disco - solo para uso temporal.
 
     Args:
-        collection_name (str): Nombre de la colección
-        texts (List[str]): Textos a añadir
+        file_paths (List[str]): Rutas a los archivos de texto
+        metadatas (List[Dict], optional): Metadata para cada archivo
+        embedding_model (str): Modelo de embeddings de OpenAI
+        chunk_size (int, optional): Tamaño de los chunks. Si None, no hace chunking
+        chunk_overlap (int, optional): Overlap entre chunks. Si None, usa chunk_size/10
+
+    Returns:
+        FAISS: Vector store en memoria listo para usar
+
+    Example:
+        >>> file_paths = ["processed/file1.txt", "processed/file2.txt"]
+        >>> metadatas = [
+        >>>     {"codigo_cotizacion": "12345", "source_file": "file1.txt"},
+        >>>     {"codigo_cotizacion": "12346", "source_file": "file2.txt"}
+        >>> ]
+        >>> # Sin chunking
+        >>> vectorstore = create_faiss_from_files(file_paths, metadatas)
+        >>> # Con chunking pequeño (para campos manuales)
+        >>> vectorstore = create_faiss_from_files(file_paths, metadatas, chunk_size=200, chunk_overlap=50)
+    """
+    # Validar API key
+    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
+
+    # Inicializar embeddings
+    embeddings = OpenAIEmbeddings(
+        model=embedding_model,
+        api_key=api_key
+    )
+
+    # Leer archivos y crear documentos
+    documents = []
+    for i, file_path in enumerate(file_paths):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+                # Combinar metadata proporcionada con metadata del archivo
+                metadata = metadatas[i] if metadatas and i < len(metadatas) else {}
+                metadata['source_file'] = os.path.basename(file_path)
+                metadata['file_path'] = file_path
+
+                doc = Document(page_content=content, metadata=metadata)
+                documents.append(doc)
+
+        except Exception as e:
+            print(f"Error reading file {file_path}: {e}")
+            continue
+
+    if not documents:
+        raise ValueError("No se pudo leer ningún archivo")
+
+    # Aplicar chunking si se especificó
+    if chunk_size is not None:
+        overlap = chunk_overlap if chunk_overlap is not None else max(1, chunk_size // 10)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            length_function=len,
+            separators=["\n\n", "\n", ". ", " ", ""]
+        )
+        documents = text_splitter.split_documents(documents)
+        print(f"Documentos divididos en {len(documents)} chunks de ~{chunk_size} caracteres")
+
+    # Crear FAISS en memoria
+    vectorstore = FAISS.from_documents(documents, embeddings)
+
+    return vectorstore
+
+
+def create_faiss_from_texts(
+    texts: List[str],
+    metadatas: Optional[List[Dict[str, Any]]] = None,
+    embedding_model: str = "text-embedding-3-small"
+) -> FAISS:
+    """
+    Crea un vector store FAISS en memoria desde textos.
+    NO persiste nada en disco - solo para uso temporal.
+
+    Args:
+        texts (List[str]): Lista de textos
         metadatas (List[Dict], optional): Metadata para cada texto
-        persist_directory (str): Directorio de persistencia
-        embedding_model (str): Modelo de embeddings
+        embedding_model (str): Modelo de embeddings de OpenAI
 
     Returns:
-        VectorStoreManager: Gestor del vector store creado
-
-    Example:
-        >>> texts = ["Documento 1", "Documento 2"]
-        >>> metadatas = [{"type": "A"}, {"type": "B"}]
-        >>> manager = create_vectorstore("my_collection", texts, metadatas)
+        FAISS: Vector store en memoria listo para usar
     """
-    manager = VectorStoreManager(
-        collection_name=collection_name,
-        persist_directory=persist_directory,
-        embedding_model=embedding_model
+    # Validar API key
+    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
+
+    # Inicializar embeddings
+    embeddings = OpenAIEmbeddings(
+        model=embedding_model,
+        api_key=api_key
     )
 
-    if texts:
-        manager.add_documents(texts, metadatas)
+    # Crear documentos
+    documents = []
+    for i, text in enumerate(texts):
+        metadata = metadatas[i] if metadatas and i < len(metadatas) else {}
+        doc = Document(page_content=text, metadata=metadata)
+        documents.append(doc)
 
-    return manager
+    # Crear FAISS en memoria
+    vectorstore = FAISS.from_documents(documents, embeddings)
+
+    return vectorstore
 
 
-def load_vectorstore(collection_name: str,
-                    persist_directory: str = "./chroma_db",
-                    embedding_model: str = "models/text-embedding-004") -> VectorStoreManager:
+def search_in_faiss(
+    vectorstore: FAISS,
+    query: str,
+    k: int = 5,
+    filter: Optional[Dict[str, Any]] = None
+) -> List[Document]:
     """
-    Carga un vector store existente.
+    Busca en un vector store FAISS aplicando filtros de metadata.
 
     Args:
-        collection_name (str): Nombre de la colección
-        persist_directory (str): Directorio de persistencia
-        embedding_model (str): Modelo de embeddings
+        vectorstore (FAISS): Vector store donde buscar
+        query (str): Query de búsqueda
+        k (int): Número de resultados
+        filter (Dict, optional): Filtros de metadata
 
     Returns:
-        VectorStoreManager: Gestor del vector store cargado
-
-    Example:
-        >>> manager = load_vectorstore("my_collection")
-        >>> results = manager.similarity_search("búsqueda de ejemplo")
+        List[Document]: Documentos encontrados
     """
-    return VectorStoreManager(
-        collection_name=collection_name,
-        persist_directory=persist_directory,
-        embedding_model=embedding_model
-    )
+    if not filter:
+        return vectorstore.similarity_search(query, k=k)
+
+    # FAISS no soporta filtros nativos, aplicamos manualmente
+    # Obtenemos más resultados y luego filtramos
+    all_results = vectorstore.similarity_search(query, k=k*10)
+
+    filtered_results = []
+    for doc in all_results:
+        if _matches_filter(doc.metadata, filter):
+            filtered_results.append(doc)
+            if len(filtered_results) >= k:
+                break
+
+    return filtered_results
 
 
+def _matches_filter(metadata: Dict[str, Any], filter: Dict[str, Any]) -> bool:
+    """
+    Verifica si un documento coincide con los filtros de metadata.
+    Soporta filtros con operadores $and, $eq similares a ChromaDB.
+    """
+    if not filter:
+        return True
+
+    # Soporte para formato ChromaDB: {"$and": [{"field": {"$eq": "value"}}]}
+    if "$and" in filter:
+        conditions = filter["$and"]
+        for condition in conditions:
+            for field, value_filter in condition.items():
+                if isinstance(value_filter, dict) and "$eq" in value_filter:
+                    if metadata.get(field) != value_filter["$eq"]:
+                        return False
+                elif metadata.get(field) != value_filter:
+                    return False
+        return True
+
+    # Formato simple: {"field": "value"}
+    for field, value in filter.items():
+        if metadata.get(field) != value:
+            return False
+
+    return True
+
+
+# ========== CHROMA DESHABILITADO ==========
+# MIGRADO A FAISS - Chroma causaba overhead de telemetry y era lento
+# El código ahora usa FAISS para todo (adjuntos Y diccionarios)
+#
+# class VectorStoreManager:
+#     """
+#     DEPRECATED: Esta clase usaba Chroma para diccionarios pre-cargados.
+#     Ahora se usa FAISS para todo (ver retriever_diccionario.py).
+#     """
+#     pass

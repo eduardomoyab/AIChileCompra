@@ -1,11 +1,33 @@
 import os
+import itertools
+import threading
 from typing import Optional
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_deepseek import ChatDeepSeek
+#from langchain_deepseek import ChatDeepSeek
 # Cargar variables de entorno
 load_dotenv()
+
+# Round-robin entre OPENAI_API_KEY y OPENAI_API_KEY_2 (si existe)
+_openai_keys_lock = threading.Lock()
+_openai_keys_cycle: Optional[itertools.cycle] = None
+
+def _get_openai_key_roundrobin() -> str:
+    global _openai_keys_cycle
+    with _openai_keys_lock:
+        if _openai_keys_cycle is None:
+            # Soporta múltiples keys separadas por coma en OPENAI_API_KEY
+            raw = os.getenv("OPENAI_API_KEY", "")
+            keys = [k.strip() for k in raw.split(",") if k.strip()]
+            # Compatibilidad con variable separada OPENAI_API_KEY_2
+            extra = (os.getenv("OPENAI_API_KEY_2") or "").strip()
+            if extra and extra not in keys:
+                keys.append(extra)
+            if not keys:
+                raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
+            _openai_keys_cycle = itertools.cycle(keys)
+        return next(_openai_keys_cycle)
 
 
 def get_llm(model_provider: str = "openai", temperature: float = 0.0):
@@ -25,10 +47,7 @@ def get_llm(model_provider: str = "openai", temperature: float = 0.0):
     model_provider = model_provider.lower()
 
     if model_provider == "openai":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
-
+        api_key = _get_openai_key_roundrobin()
         model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
         return ChatOpenAI(
@@ -50,20 +69,20 @@ def get_llm(model_provider: str = "openai", temperature: float = 0.0):
             google_api_key=api_key
         )
 
-    elif model_provider == "deepseek":
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY no está configurada en el archivo .env")
+    # elif model_provider == "deepseek":
+    #     api_key = os.getenv("DEEPSEEK_API_KEY")
+    #     if not api_key:
+    #         raise ValueError("DEEPSEEK_API_KEY no está configurada en el archivo .env")
 
-        model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    #     model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    #     base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 
-        return ChatDeepSeek(
-            model=model_name,
-            temperature=temperature,
-            deepseek_api_key=api_key,
-            base_url=base_url
-        )
+    #     return ChatDeepSeek(
+    #         model=model_name,
+    #         temperature=temperature,
+    #         deepseek_api_key=api_key,
+    #         base_url=base_url
+    #     )
 
     else:
         raise ValueError(
