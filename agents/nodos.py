@@ -21,6 +21,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 _download_locks: Dict[str, threading.Lock] = {}
 _download_locks_mutex = threading.Lock()
 
+# Semáforo global: limita LLM calls simultáneas para no disparar ráfagas que quemen el RPM
+_llm_semaphore = threading.Semaphore(int(os.getenv("LLM_MAX_CONCURRENT", "2")))
+
 # Añadir el directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -880,7 +883,8 @@ Responde ÚNICAMENTE con un JSON válido, sin explicaciones ni markdown:
 
         for attempt in range(max_retries):
             try:
-                response = llm.invoke(prompt)
+                with _llm_semaphore:
+                    response = llm.invoke(prompt)
                 content = response.content.strip()
                 if content.startswith("```"):
                     content = re.sub(r"^```(?:json)?\s*", "", content)
@@ -890,11 +894,13 @@ Responde ÚNICAMENTE con un JSON válido, sin explicaciones ni markdown:
             except Exception as e:
                 error_msg = str(e)
                 if "429" in error_msg or "rate" in error_msg.lower() or "quota" in error_msg.lower():
-                    if attempt < max_retries - 1:
-                        logging.warning(f"  Rate limit, esperando {delay}s...")
-                        time.sleep(delay)
-                        delay *= 2
-                        continue
+                    # Extraer tiempo real de espera del mensaje de OpenAI ("retry after Xs" o "Please retry in Xs")
+                    match = re.search(r'(?:retry after|retry in|please retry in)\s*(\d+(?:\.\d+)?)', error_msg, re.IGNORECASE)
+                    wait = float(match.group(1)) + 2 if match else max(delay, 30)
+                    logging.warning(f"  Rate limit (429) intento {attempt+1}/{max_retries} — esperando {wait:.0f}s...")
+                    time.sleep(wait)
+                    delay *= 2
+                    continue
                 logging.error(f"  Error LLM intento {attempt+1}: {error_msg}")
                 if attempt == max_retries - 1:
                     resultado_json = {item["campo"]: "Error en extracción" for item in campos_manuales}
