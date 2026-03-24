@@ -40,6 +40,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Pre-descargar modelos de EasyOCR durante el build (evita descarga en runtime)
 RUN python -c "import easyocr; easyocr.Reader(['es', 'en'], gpu=False)" 2>&1 | tail -5
 
+# Pre-descargar modelo de embeddings HuggingFace (evita descarga en runtime)
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
+
 # Copiar el resto del código
 COPY . .
 

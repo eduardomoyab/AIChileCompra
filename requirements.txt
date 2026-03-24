@@ -29,6 +29,9 @@ openai==1.59.6
 # Vector stores
 faiss-cpu==1.9.0
 
+# Local embeddings (sin API key, sin límites)
+sentence-transformers==3.4.1
+
 # Document processing
 pandas==2.2.3
 openpyxl==3.1.5

@@ -8,18 +8,32 @@ load_dotenv()
 # Fix para conflicto de OpenMP con FAISS
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 # CHROMA DESHABILITADO - Solo usamos FAISS ahora
 # from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+# Singleton: el modelo se carga una sola vez por proceso (~400MB, tarda ~3s la primera vez)
+_HF_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+_hf_embeddings: Optional[HuggingFaceEmbeddings] = None
+
+def _get_embeddings() -> HuggingFaceEmbeddings:
+    global _hf_embeddings
+    if _hf_embeddings is None:
+        _hf_embeddings = HuggingFaceEmbeddings(
+            model_name=_HF_MODEL_NAME,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    return _hf_embeddings
+
 
 def create_faiss_from_files(
     file_paths: List[str],
     metadatas: Optional[List[Dict[str, Any]]] = None,
-    embedding_model: str = "text-embedding-3-small",
+    embedding_model: str = "text-embedding-3-small",  # ignorado, conservado por compatibilidad
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None
 ) -> FAISS:
@@ -48,16 +62,7 @@ def create_faiss_from_files(
         >>> # Con chunking pequeño (para campos manuales)
         >>> vectorstore = create_faiss_from_files(file_paths, metadatas, chunk_size=200, chunk_overlap=50)
     """
-    # Validar API key
-    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
-
-    # Inicializar embeddings
-    embeddings = OpenAIEmbeddings(
-        model=embedding_model,
-        api_key=api_key
-    )
+    embeddings = _get_embeddings()
 
     # Leer archivos y crear documentos
     documents = []
@@ -116,16 +121,7 @@ def create_faiss_from_texts(
     Returns:
         FAISS: Vector store en memoria listo para usar
     """
-    # Validar API key
-    api_key = (os.getenv("OPENAI_API_KEY") or "").split(",")[0].strip() or None
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY no está configurada en el archivo .env")
-
-    # Inicializar embeddings
-    embeddings = OpenAIEmbeddings(
-        model=embedding_model,
-        api_key=api_key
-    )
+    embeddings = _get_embeddings()
 
     # Crear documentos
     documents = []
