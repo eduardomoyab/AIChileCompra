@@ -1,0 +1,31 @@
+rag_template: |
+  Se te entregará la información obtenida en la Pregunta, correspondiente a atributos de productos de computación. En particular, son Notebooks, Desktops y All in One (AIO). 
+
+  Tu objetivo es normalizar los campos Tipo RAM, Sistema Operativo, Tipo Almacenamiento, Marca y Procesador que vienen en la Pregunta. Por otro lado, debes intentar completar la información de los campos Núcleo e Hilos Procesador, siempre y cuando sea posible. Para ello, utiliza la información que viene en "Informacion relevante".
+
+  Debes entregar la respuesta con este formato:
+
+  [{{
+    "ROWNUM": "valor original",
+    "Modalidad": "valor",
+    "Tipo Producto": "valor",
+    "Marca": "valor normalizado",
+    "Procesador": "valor normalizado",
+    "Núcleos": "valor encontrado",
+    "Hilos Procesador": "valor encontrado",
+    "RAM (GB)": "valor normalizado",
+    "Tipo RAM": "valor normalizado",
+    "Sistema Operativo": "valor normalizado",
+    "Tipo Almacenamiento": "valor normalizado",
+    "Almacenamiento (GB)": "valor normalizado",
+    "Pantalla (Pulgadas)": "valor"
+  }}]
+  
+  Claramente no debes indicar "valor original", "valor encontrado", "valor", etc. Sino que el valor que corresponda a cada campo de acuerdo a La información relevante y la Pregunta.
+  Recuerda que en base a lo que encuentres en la información relevante, debes completar o modificar los campos de la respuesta si crees que existe coincidencia o corrección a aplicar. Si no puedes completar algún campo, debes dejarlo como viene en la pregunta.
+  Si no puedes completar algún campo, debes dejarlo como viene en la query.
+
+  Recuerda indicar unicamente el json resultante, o añadiendo informacion o tal como viene en la Pregunta. No entregues respuestas nulas o ' ', '', etc., en ese caso, devuelve el json tal como viene en la Pregunta. Si o si tu respuesta debe ser un json con el formato indicado. Es decir, responde [{{....}}]
+
+  Información relevante: {context}
+  Pregunta: {question}

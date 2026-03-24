@@ -5,29 +5,25 @@ This module defines the complete workflow graph using LangGraph,
 connecting all nodes in the proper sequence with conditional edges.
 """
 
-import json
 import os
 import sys
 import logging
-from typing import Dict, Any, List, Optional
-from uuid import uuid4
+from typing import Dict, Any
 
 from langgraph.graph import StateGraph, END
 
 # Añadir el directorio raíz al path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.state import CatalogacionState, create_initial_state
-from agents.nodos import (
+from agents.state_comp import CatalogacionState, create_initial_state
+from agents.nodos_comp import (
     descargar_adjuntos_node,
     procesar_adjuntos_node,
     rag_adjuntos_node,
-    campos_manuales_node,
     rag_diccionarios_node,
     consolidar_resultado_node,
     should_continue_after_download,
     should_continue_after_processing,
-    should_extract_campos_manuales,
     should_use_diccionarios
 )
 
@@ -51,12 +47,6 @@ def create_catalogacion_graph():
     procesar_adjuntos
       ↓ (si exitoso)
     rag_adjuntos
-      ↓
-    ┌────────────────────┐
-    │ ¿campos_manuales?  │
-    └────────────────────┘
-      ↓ Sí                ↓ No
-    campos_manuales     rag_adjuntos (continúa)
       ↓
     ┌─────────────┐
     │ ¿usar_dic?  │
@@ -89,13 +79,10 @@ def create_catalogacion_graph():
     # Nodo 3: RAG con adjuntos
     workflow.add_node("rag_adjuntos", rag_adjuntos_node)
 
-    # Nodo 4: Extracción paralela de campos manuales
-    workflow.add_node("campos_manuales", campos_manuales_node)
-
-    # Nodo 5: RAG con diccionarios (normalización)
+    # Nodo 4: RAG con diccionarios (normalización)
     workflow.add_node("rag_diccionarios", rag_diccionarios_node)
 
-    # Nodo 6: Consolidar resultado final
+    # Nodo 5: Consolidar resultado final
     workflow.add_node("consolidar_resultado", consolidar_resultado_node)
 
     # ========== DEFINIR PUNTO DE ENTRADA ==========
@@ -124,20 +111,9 @@ def create_catalogacion_graph():
         }
     )
 
-    # Edge 3: rag_adjuntos -> campos_manuales o rag_diccionarios o consolidar (condicional)
+    # Edge 3: rag_adjuntos -> rag_diccionarios o consolidar (condicional)
     workflow.add_conditional_edges(
         "rag_adjuntos",
-        should_extract_campos_manuales,
-        {
-            "campos_manuales": "campos_manuales",
-            "rag_diccionarios": "rag_diccionarios",
-            "consolidar_resultado": "consolidar_resultado"
-        }
-    )
-
-    # Edge 4: campos_manuales -> rag_diccionarios o consolidar (condicional)
-    workflow.add_conditional_edges(
-        "campos_manuales",
         should_use_diccionarios,
         {
             "rag_diccionarios": "rag_diccionarios",
@@ -145,10 +121,10 @@ def create_catalogacion_graph():
         }
     )
 
-    # Edge 5: rag_diccionarios -> consolidar_resultado (siempre)
+    # Edge 4: rag_diccionarios -> consolidar_resultado (siempre)
     workflow.add_edge("rag_diccionarios", "consolidar_resultado")
 
-    # Edge 6: consolidar_resultado -> END (siempre)
+    # Edge 5: consolidar_resultado -> END (siempre)
     workflow.add_edge("consolidar_resultado", END)
 
     # ========== COMPILAR GRAFO ==========
@@ -167,11 +143,7 @@ def ejecutar_catalogacion(
     rut_proveedor: str,
     payload: Dict[str, Any],
     use_diccionarios: bool = True,
-    llm_provider: str = None,
-    downloader: Any = None,
-    campos_manuales_lista: List[Dict] = None,
-    diccionario_similarity_threshold: float = 0.85,
-    diccionario_llm_fallback: bool = True,
+    llm_provider: str = None
 ) -> Dict[str, Any]:
     """
     Ejecuta el workflow completo de catalogación usando el grafo.
@@ -212,15 +184,8 @@ def ejecutar_catalogacion(
         rut_proveedor=rut_proveedor,
         payload=payload,
         use_diccionarios=use_diccionarios,
-        llm_provider=llm_provider,
-        campos_manuales_lista=campos_manuales_lista,
-        diccionario_similarity_threshold=diccionario_similarity_threshold,
-        diccionario_llm_fallback=diccionario_llm_fallback,
+        llm_provider=llm_provider
     )
-
-    # Agregar downloader al state si se proporcionó
-    if downloader is not None:
-        initial_state['downloader'] = downloader
 
     # Crear y ejecutar grafo
     graph = create_catalogacion_graph()
@@ -240,142 +205,6 @@ def ejecutar_catalogacion(
     logging.info(f"ROWNUM: {payload.get('ROWNUM')}")
     logging.info(f"Errores: {len(final_state.get('errores', []))}")
     logging.info(f"Warnings: {len(final_state.get('warnings', []))}")
-    logging.info(f"{'='*60}\n")
-
-    return final_state
-
-
-# ========== GRAFO SIMPLIFICADO PARA MODO TEXTO ==========
-
-def create_catalogacion_texto_graph():
-    """
-    Crea un grafo simplificado para catalogación desde texto directo.
-
-    Flujo:
-        START → campos_manuales → rag_diccionarios → consolidar_resultado → END
-
-    Los nodos de descarga/procesamiento/RAG de adjuntos se omiten porque el texto
-    ya viene como input en state['texto_directo'].
-    """
-    workflow = StateGraph(CatalogacionState)
-
-    workflow.add_node("campos_manuales", campos_manuales_node)
-    workflow.add_node("rag_diccionarios", rag_diccionarios_node)
-    workflow.add_node("consolidar_resultado", consolidar_resultado_node)
-
-    workflow.set_entry_point("campos_manuales")
-
-    workflow.add_conditional_edges(
-        "campos_manuales",
-        should_use_diccionarios,
-        {
-            "rag_diccionarios": "rag_diccionarios",
-            "consolidar_resultado": "consolidar_resultado",
-        }
-    )
-    workflow.add_edge("rag_diccionarios", "consolidar_resultado")
-    workflow.add_edge("consolidar_resultado", END)
-
-    graph = workflow.compile()
-    logging.info("✓ Grafo texto compilado exitosamente")
-    return graph
-
-
-def ejecutar_catalogacion_texto(
-    nombre_producto: str,
-    descripcion: Optional[str],
-    atributos: Optional[Dict[str, Any]],
-    categoria: str = "Computadores",
-    campos_manuales_lista: Optional[List[Dict]] = None,
-    use_diccionarios: bool = True,
-    llm_provider: Optional[str] = None,
-    diccionario_similarity_threshold: float = 0.85,
-    diccionario_llm_fallback: bool = True,
-) -> Dict[str, Any]:
-    """
-    Ejecuta catalogación desde texto directo (sin adjuntos de Mercado Público).
-
-    Construye el texto de contexto, crea un payload sintético compatible con el
-    estado del grafo y ejecuta el grafo simplificado (campos_manuales →
-    rag_diccionarios → consolidar_resultado).
-
-    Args:
-        nombre_producto: Nombre del producto (requerido)
-        descripcion: Descripción libre del producto
-        atributos: Tabla de especificaciones técnicas {campo: valor}
-        categoria: Categoría del producto
-        campos_manuales_lista: Lista de {campo, contexto} a extraer
-        use_diccionarios: Si normalizar con diccionarios
-        llm_provider: Proveedor LLM. None = usa DEFAULT_LLM_PROVIDER del .env
-        diccionario_similarity_threshold: Score mínimo para match de diccionario
-        diccionario_llm_fallback: Si usar LLM cuando no hay match sobre threshold
-
-    Returns:
-        dict: Estado final con resultado_final, errores, warnings, etc.
-    """
-    rownum = str(uuid4())[:8]
-
-    # Construir texto de contexto plano
-    partes = [f"Nombre del producto: {nombre_producto}"]
-    if descripcion:
-        partes.append(f"Descripción: {descripcion}")
-    if atributos:
-        partes.append(f"Especificaciones técnicas: {json.dumps(atributos, ensure_ascii=False)}")
-    texto_directo = "\n".join(partes)
-
-    # Payload sintético compatible con los nodos downstream (rag_diccionarios, consolidar)
-    payload = {
-        "ROWNUM": rownum,
-        "Categoria": categoria,
-        "DescripcionProductoComprador": nombre_producto,
-        "DescripcionProductoProveedor": descripcion or nombre_producto,
-        "productoname": nombre_producto,
-    }
-
-    initial_state = CatalogacionState(
-        # Input
-        codigo_cotizacion="texto",
-        rut_proveedor="texto",
-        payload=payload,
-        # Modo texto
-        texto_directo=texto_directo,
-        # Config
-        use_diccionarios=use_diccionarios,
-        llm_provider=llm_provider,
-        campos_manuales_lista=campos_manuales_lista or [],
-        diccionario_similarity_threshold=diccionario_similarity_threshold,
-        diccionario_llm_fallback=diccionario_llm_fallback,
-        # Estado de adjuntos: marcados como False (no aplica en modo texto)
-        adjuntos_descargados=False,
-        adjuntos_procesados=False,
-        adjuntos_path=None,
-        processed_path=None,
-        vector_store_created=False,
-        # resultado_adjuntos inicializado con ROWNUM para que rag_diccionarios_node lo encuentre
-        resultado_adjuntos={"ROWNUM": rownum},
-        resultado_diccionarios=None,
-        resultado_campos_manuales=None,
-        resultado_final=None,
-        errores=[],
-        warnings=[],
-        tiempo_total=None,
-        tiempos=[],
-        adjuntos_vectorstore=None,
-    )
-
-    graph = create_catalogacion_texto_graph()
-
-    logging.info(f"\n{'='*60}")
-    logging.info(f"INICIANDO CATALOGACIÓN DESDE TEXTO")
-    logging.info(f"Producto: {nombre_producto}")
-    logging.info(f"ROWNUM: {rownum}")
-    logging.info(f"{'='*60}\n")
-
-    final_state = graph.invoke(initial_state)
-
-    logging.info(f"\n{'='*60}")
-    logging.info(f"CATALOGACIÓN TEXTO FINALIZADA")
-    logging.info(f"Errores: {len(final_state.get('errores', []))}")
     logging.info(f"{'='*60}\n")
 
     return final_state

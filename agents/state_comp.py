@@ -59,11 +59,6 @@ class CatalogacionState(TypedDict, total=False):
     # ========== CONFIGURATION ==========
     use_diccionarios: bool
     llm_provider: Optional[str]
-    downloader: Optional[Any]  # Instancia global de AttachmentDownloader (opcional)
-    campos_manuales_lista: Optional[List[Dict]]  # Lista de {campo, contexto} a extraer en paralelo
-    diccionario_similarity_threshold: Optional[float]  # Score mínimo para aceptar match (default 0.85)
-    diccionario_llm_fallback: Optional[bool]  # Si usar LLM cuando no hay match sobre threshold
-    texto_directo: Optional[str]  # Texto plano del producto (modo /catalogar/texto, sin adjuntos)
 
     # ========== PROCESSING STATE ==========
     adjuntos_descargados: bool
@@ -75,7 +70,6 @@ class CatalogacionState(TypedDict, total=False):
     # ========== INTERMEDIATE RESULTS ==========
     resultado_adjuntos: Optional[Dict[str, Any]]
     resultado_diccionarios: Optional[Dict[str, Any]]
-    resultado_campos_manuales: Optional[Dict[str, Any]]  # Resultado de extracción paralela de campos manuales
 
     # ========== FINAL RESULT ==========
     resultado_final: Optional[Dict[str, Any]]
@@ -84,7 +78,6 @@ class CatalogacionState(TypedDict, total=False):
     errores: List[str]
     warnings: List[str]
     tiempo_total: Optional[float]
-    tiempos: List[Dict[str, Any]]  # Registro de tiempos por fase interna
 
 
 def create_initial_state(
@@ -92,10 +85,7 @@ def create_initial_state(
     rut_proveedor: str,
     payload: Dict[str, Any],
     use_diccionarios: bool = True,
-    llm_provider: Optional[str] = None,
-    campos_manuales_lista: Optional[List[Dict]] = None,
-    diccionario_similarity_threshold: float = 0.85,
-    diccionario_llm_fallback: bool = True,
+    llm_provider: Optional[str] = None
 ) -> CatalogacionState:
     """
     Crea el estado inicial para el workflow de catalogación.
@@ -126,9 +116,6 @@ def create_initial_state(
         # Configuration
         use_diccionarios=use_diccionarios,
         llm_provider=llm_provider,
-        campos_manuales_lista=campos_manuales_lista,
-        diccionario_similarity_threshold=diccionario_similarity_threshold,
-        diccionario_llm_fallback=diccionario_llm_fallback,
 
         # Processing state (all False/None initially)
         adjuntos_descargados=False,
@@ -140,15 +127,12 @@ def create_initial_state(
         # Results (all None initially)
         resultado_adjuntos=None,
         resultado_diccionarios=None,
-        resultado_campos_manuales=None,
         resultado_final=None,
 
         # Metadata
         errores=[],
         warnings=[],
-        tiempo_total=None,
-        tiempos=[],
-        adjuntos_vectorstore=None,
+        tiempo_total=None
     )
 
 
@@ -198,37 +182,6 @@ def validate_state(state: CatalogacionState) -> tuple[bool, List[str]]:
         errors.append("payload no tiene todos los campos requeridos")
 
     return len(errors) == 0, errors
-
-
-def add_tiempo(
-    state: CatalogacionState,
-    nodo: str,
-    fase: str,
-    descripcion: str,
-    segundos: float,
-) -> CatalogacionState:
-    """
-    Helper para registrar el tiempo de una fase interna en el estado.
-
-    Args:
-        state: Estado actual
-        nodo: Nombre del nodo LangGraph (ej: "nodo_1_descargar_adjuntos")
-        fase: Sub-fase dentro del nodo (ej: "download_api")
-        descripcion: Descripción legible de lo que se midió
-        segundos: Tiempo en segundos
-
-    Returns:
-        CatalogacionState: Estado actualizado con el tiempo registrado
-    """
-    if 'tiempos' not in state:
-        state['tiempos'] = []
-    state['tiempos'].append({
-        "nodo": nodo,
-        "fase": fase,
-        "descripcion": descripcion,
-        "segundos": round(segundos, 4),
-    })
-    return state
 
 
 def add_error(state: CatalogacionState, error: str) -> CatalogacionState:

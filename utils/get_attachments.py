@@ -5,452 +5,370 @@ import requests
 import shutil
 import zipfile
 import rarfile
-from typing import Optional
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.firefox.service import Service
 from dotenv import load_dotenv
 
+# Cargar variables de entorno
 load_dotenv()
 
 # Configuración
+GECKO_DRIVER_PATH = os.getenv("GECKO_DRIVER_PATH", "C:/SeleniumDrivers/geckodriver.exe")
 OUTPUT_BASE_PATH = os.getenv("ATTACHMENTS_OUTPUT_PATH", "attachments")
 
-# Claves públicas embebidas en el JS bundle de buscador.mercadopublico.cl
-# (no requieren login ni credenciales)
-BASE_BUSCADOR = "https://api.buscador.mercadopublico.cl"
-BASE_ADJUNTO = "https://adjunto.mercadopublico.cl/adjunto-compra-agil"
-BUSCADOR_API_KEY = "e93089e4-437c-4723-b343-4fa20045e3bc"
-USER_KEY = "41186b85826e80d1a0d445a6ce67d1a3"
+# Constantes de espera
+MAX_WAIT_TIME = 60
+WAIT_LOGIN_EXTRA = 5
+CLICK_RETRY_COUNT = 5
+SLEEP_BEFORE_CLICK = 3
+LOGIN_BUTTON_DELAY = 5
 
 
-class BuscadorAttachmentDownloader:
-    """Descarga adjuntos de Compra Ágil usando la API pública del Buscador.
-    No requiere login, Selenium ni credenciales."""
+class MercadoPublicoAttachmentDownloader:
+    """Clase para gestionar la descarga de adjuntos desde Mercado Público"""
 
-    def __init__(self):
-        self._headers_buscador = {"x-api-key": BUSCADOR_API_KEY}
-        self._headers_adjunto = {"user_key": USER_KEY}
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(levelname)s - %(message)s"
-        )
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _get_with_retries(self, url: str, headers: dict = None, params: dict = None,
-                          max_retries: int = 3, wait_seconds: int = 2, stream: bool = False):
-        """Realiza peticiones GET con reintentos ante errores transitorios."""
-        for intento in range(1, max_retries + 1):
-            try:
-                response = requests.get(url, headers=headers, params=params,
-                                        stream=stream, timeout=10)
-                if response.status_code == 200:
-                    return response
-                logging.warning(f"Intento {intento}: status {response.status_code} en {url}")
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Intento {intento}: error de red: {e}")
-            time.sleep(wait_seconds)
-        raise Exception(f"No se obtuvo respuesta 200 tras {max_retries} intentos: {url}")
-
-    def _extract_and_flatten(self, file_path: str, target_dir: str):
-        """Extrae archivos ZIP/RAR y aplana la estructura de directorios."""
-        temp_extract_dir = os.path.join(target_dir, "__temp_extract__")
-        os.makedirs(temp_extract_dir, exist_ok=True)
-
-        try:
-            if file_path.lower().endswith(".zip"):
-                with zipfile.ZipFile(file_path, "r") as zf:
-                    zf.extractall(temp_extract_dir)
-            elif file_path.lower().endswith(".rar"):
-                with rarfile.RarFile(file_path, "r") as rf:
-                    rf.extractall(temp_extract_dir)
-
-            for root, _, files in os.walk(temp_extract_dir):
-                if "_MACOSX" in root:
-                    continue
-                for file in files:
-                    origen = os.path.join(root, file)
-                    destino = os.path.join(target_dir, file)
-                    base, ext = os.path.splitext(file)
-                    count = 1
-                    while os.path.exists(destino):
-                        destino = os.path.join(target_dir, f"{base}_{count}{ext}")
-                        count += 1
-                    shutil.move(origen, destino)
-        finally:
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
-            os.remove(file_path)
-
-    def _sanitize_filename(self, filename: str) -> str:
-        """Elimina caracteres inválidos del nombre de archivo."""
-        invalid_chars = [" ", ":", "/", "\\", "|", "?", "*", "<", ">", '"', "'",
-                         ";", ",", "&", "%", "$", "#"]
-        for char in invalid_chars:
-            filename = filename.replace(char, "_")
-        return filename
-
-    # ------------------------------------------------------------------
-    # Flujo principal
-    # ------------------------------------------------------------------
-
-    def _get_winner_cotizacion_id(self, codigo_cotizacion: str) -> Optional[int]:
+    def __init__(self, headless: bool = True):
         """
-        Consulta la ficha de la cotización en el Buscador y retorna el
-        id_cotizacion del proveedor seleccionado (ganador).
-        """
-        url = f"{BASE_BUSCADOR}/compra-agil?action=ficha&code={codigo_cotizacion}"
-        resp = self._get_with_retries(url, headers=self._headers_buscador)
-        ficha = resp.json().get("payload") or {}
-
-        proveedores = ficha.get("proveedores_cotizando", [])
-        ganador = next(
-            (p for p in proveedores if p.get("proveedor_seleccionado") == 1),
-            None
-        )
-        if ganador is None:
-            logging.warning(f"No se encontró proveedor ganador para {codigo_cotizacion}")
-            return None
-
-        logging.info(
-            f"Proveedor ganador: {ganador.get('razon_social')} "
-            f"(RUT: {ganador.get('rut_proveedor')}, "
-            f"id_cotizacion: {ganador.get('id_cotizacion')})"
-        )
-        return ganador["id_cotizacion"]
-
-    def _list_files(self, id_cotizacion: int) -> list:
-        """
-        Retorna la lista de archivos adjuntos para la cotización del ganador.
-        Cada elemento tiene al menos {id, nombreArchivo}.
-        """
-        url = (f"{BASE_ADJUNTO}/v1/adjuntos-compra-agil"
-               f"/cotizacion/listar/{id_cotizacion}")
-        resp = self._get_with_retries(url, headers=self._headers_adjunto)
-        payload = resp.json().get("payload") or {}
-        return payload.get("files", [])
-
-    def download_attachments(self, codigo_cotizacion: str, rut_proveedor: str) -> dict:
-        """
-        Descarga los adjuntos del proveedor ganador de una Compra Ágil.
+        Inicializa el downloader de adjuntos.
 
         Args:
-            codigo_cotizacion: Código de la cotización (ej. "2927-350-COT25").
-            rut_proveedor: RUT del proveedor — se usa solo para la ruta de salida.
-
-        Returns:
-            dict con claves: success, files_downloaded, output_path, total_files, error.
+            headless (bool): Si se ejecuta el navegador en modo headless
         """
-        output_path = os.path.join(OUTPUT_BASE_PATH,
-                                   str(codigo_cotizacion),
-                                   str(rut_proveedor))
-        os.makedirs(output_path, exist_ok=True)
-        files_downloaded = []
+        self.headless = headless
+        self.driver = None
+        self.token_bearer = None
+        self.setup_logging()
 
-        try:
-            # Paso 1: identificar id_cotizacion del proveedor ganador
-            id_cot = self._get_winner_cotizacion_id(codigo_cotizacion)
-            if id_cot is None:
-                return {
-                    "success": False,
-                    "error": "No se encontró proveedor seleccionado en la ficha",
-                    "files_downloaded": [],
-                    "output_path": output_path,
-                }
+    def setup_logging(self):
+        """Configura el logging básico"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
 
-            # Paso 2: listar adjuntos
-            files = self._list_files(id_cot)
-            if not files:
-                logging.info(f"Sin adjuntos para cotización {codigo_cotizacion}")
-                return {
-                    "success": True,
-                    "files_downloaded": [],
-                    "output_path": output_path,
-                    "total_files": 0,
-                }
+    def setup_driver(self):
+        """Configura y retorna el driver de Firefox"""
+        firefox_options = Options()
+        if self.headless:
+            firefox_options.add_argument("--headless")
 
-            # Paso 3: descargar cada adjunto
-            for file_info in files:
-                file_id = file_info["id"]
-                filename = self._sanitize_filename(file_info["nombreArchivo"])
-                file_path = os.path.join(output_path, filename)
+        firefox_options.set_preference("browser.download.folderList", 2)
+        firefox_options.set_preference("browser.download.manager.showWhenStarting", False)
+        firefox_options.set_preference(
+            "browser.helperApps.neverAsk.saveToDisk",
+            "application/pdf, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+            "application/vnd.ms-excel, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, image/jpeg, "
+            "image/png, image/gif, image/bmp, image/tiff, application/zip, application/octet-stream"
+        )
+        firefox_options.set_preference("pdfjs.disabled", True)
+        firefox_options.set_preference("browser.helperApps.alwaysAsk.force", False)
 
-                if os.path.exists(file_path):
-                    logging.info(f"Ya existe, omitiendo: {filename}")
-                    files_downloaded.append(filename)
-                    continue
+        service = Service(executable_path=GECKO_DRIVER_PATH)
+        return webdriver.Firefox(service=service, options=firefox_options)
 
-                url_dl = (f"{BASE_ADJUNTO}/v1/adjuntos-compra-agil"
-                          f"/descargar/{file_id}")
-                resp_dl = self._get_with_retries(
-                    url_dl, headers=self._headers_adjunto, stream=True
+    def login_mercado_publico(self):
+        """Realiza el login en Mercado Público y obtiene el token de acceso"""
+        if self.driver is None:
+            self.driver = self.setup_driver()
+
+        self.driver.get("https://www.mercadopublico.cl/Home")
+        logging.info("Visiting Mercado Publico home page")
+
+        # Click en botón de acceso
+        for attempt in range(CLICK_RETRY_COUNT):
+            try:
+                access_button = WebDriverWait(self.driver, MAX_WAIT_TIME).until(
+                    EC.element_to_be_clickable((By.XPATH, '/html/body/header/nav/div[2]/div[1]/div/button'))
                 )
+                self.driver.execute_script("arguments[0].scrollIntoView(); arguments[0].click();", access_button)
+                time.sleep(3)
+                if self._check_clave_unica_button():
+                    break
+            except Exception as e:
+                logging.error(f"Attempt {attempt + 1} failed to click access button: {e}")
 
-                with open(file_path, "wb") as fout:
-                    for chunk in resp_dl.iter_content(chunk_size=8192):
-                        fout.write(chunk)
+        # Click en botón de Clave Única
+        for attempt in range(CLICK_RETRY_COUNT):
+            try:
+                time.sleep(SLEEP_BEFORE_CLICK)
+                clave_unica_button = WebDriverWait(self.driver, MAX_WAIT_TIME).until(
+                    EC.element_to_be_clickable((By.XPATH, '/html/body/div[2]/div[2]/div/div/section/div/div[1]/div[2]/div/div/div/div/div/div/ul/a/img'))
+                )
+                self.driver.execute_script("arguments[0].scrollIntoView(); arguments[0].click();", clave_unica_button)
+                time.sleep(3)
+                if self._check_login_page():
+                    break
+            except Exception as e:
+                logging.error(f"Attempt {attempt + 1} failed to click clave unica button: {e}")
 
-                logging.info(f"Descargado: {filename} ({os.path.getsize(file_path)} bytes)")
-                files_downloaded.append(filename)
+        # Ingresar credenciales
+        WebDriverWait(self.driver, MAX_WAIT_TIME).until(
+            EC.presence_of_element_located((By.XPATH, '//*[@id="uname"]'))
+        )
 
-                if filename.lower().endswith((".zip", ".rar")):
-                    logging.info(f"Extrayendo: {filename}")
-                    self._extract_and_flatten(file_path, output_path)
+        username = os.getenv("CU_USER")
+        password = os.getenv("CU_PASSWORD")
 
-            return {
-                "success": True,
-                "files_downloaded": files_downloaded,
-                "output_path": output_path,
-                "total_files": len(files_downloaded),
-            }
+        if not username or not password:
+            raise ValueError("CU_USER y CU_PASSWORD deben estar configurados en .env")
 
-        except Exception as e:
-            logging.exception(f"Error descargando adjuntos: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "files_downloaded": files_downloaded,
-                "output_path": output_path,
-            }
+        self.driver.find_element(By.XPATH, '//*[@id="uname"]').send_keys(username)
+        self.driver.find_element(By.XPATH, '//*[@id="pword"]').send_keys(password)
+        time.sleep(LOGIN_BUTTON_DELAY)
 
-    # Mantener compatibilidad — no hay sesión que cerrar
-    def close(self):
-        pass
+        login_button = self.driver.find_element(By.XPATH, '//*[@id="login-submit"]')
+        if login_button.is_enabled():
+            login_button.click()
+            logging.info("Login submitted")
 
+        # Esperar post-login y seleccionar usuario
+        WebDriverWait(self.driver, MAX_WAIT_TIME).until(
+            EC.presence_of_element_located((By.XPATH, '/html/body/header/nav/div[2]/div[1]/div/div[2]/div/div/div/div[2]/div/table/tbody/tr/td/div[2]/label/span'))
+        )
+        time.sleep(WAIT_LOGIN_EXTRA)
 
-# ---------------------------------------------------------------------------
-# Flujo autenticado (token Bearer manual, sin Selenium)
-# ---------------------------------------------------------------------------
+        # Seleccionar usuario y obtener token
+        select_user = self.driver.find_element(By.XPATH, '//*[@id="rdbOrg1984080"]')
+        select_user.click()
+        time.sleep(SLEEP_BEFORE_CLICK)
 
-BASE_SERVICIOS = "https://servicios-compra-agil.mercadopublico.cl"
+        access_btn = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "a.btn.btn-pri"))
+        )
+        access_btn.click()
+        time.sleep(WAIT_LOGIN_EXTRA)
 
+        # Extraer token
+        cookies = self.driver.get_cookies()
+        for cookie in cookies:
+            if cookie['name'] == 'access_token_ccr':
+                self.token_bearer = cookie['value']
+                logging.info("Token obtained successfully")
+                break
 
-class TokenAttachmentDownloader:
-    """Descarga adjuntos usando las APIs internas de Compra Ágil con un
-    token Bearer proporcionado manualmente. No usa Selenium."""
+    def _check_clave_unica_button(self) -> bool:
+        """Verifica si el botón de Clave Única está presente"""
+        try:
+            self.driver.find_element(By.XPATH, '/html/body/div[2]/div[2]/div/div/section/div/div[1]/div[2]/div/div/div/div/div/div/ul/a/img')
+            return True
+        except:
+            return False
 
-    def __init__(self, token_bearer: str):
-        self.token_bearer = token_bearer
-        self._headers = {
-            "Authorization": f"Bearer {token_bearer}",
-            "Content-Type": "application/json",
-        }
+    def _check_login_page(self) -> bool:
+        """Verifica si la página de login se ha cargado"""
+        try:
+            self.driver.find_element(By.XPATH, '//*[@id="uname"]')
+            return True
+        except:
+            return False
 
     def _get_with_retries(self, url: str, headers: dict = None, params: dict = None,
-                          max_retries: int = 3, wait_seconds: int = 2, stream: bool = False):
+                          max_retries: int = 5, wait_seconds: int = 2, stream: bool = False):
+        """Realiza peticiones GET con reintentos"""
         for intento in range(1, max_retries + 1):
             try:
-                response = requests.get(url, headers=headers, params=params,
-                                        stream=stream, timeout=10)
+                response = requests.get(url, headers=headers, params=params, stream=stream)
                 if response.status_code == 200:
                     return response
-                logging.warning(f"Intento {intento}: status {response.status_code} en {url}")
+                else:
+                    logging.warning(f"Attempt {intento}: Status {response.status_code}")
             except requests.exceptions.RequestException as e:
-                logging.error(f"Intento {intento}: error de red: {e}")
+                logging.error(f"Attempt {intento}: Request error: {e}")
             time.sleep(wait_seconds)
-        raise Exception(f"No se obtuvo respuesta 200 tras {max_retries} intentos: {url}")
+        raise Exception(f"Failed to get 200 response after {max_retries} attempts")
 
     def _extract_and_flatten(self, file_path: str, target_dir: str):
+        """Extrae archivos ZIP/RAR y aplana la estructura"""
         temp_extract_dir = os.path.join(target_dir, "__temp_extract__")
         os.makedirs(temp_extract_dir, exist_ok=True)
+
         try:
-            if file_path.lower().endswith(".zip"):
-                with zipfile.ZipFile(file_path, "r") as zf:
+            if file_path.lower().endswith('.zip'):
+                with zipfile.ZipFile(file_path, 'r') as zf:
                     zf.extractall(temp_extract_dir)
-            elif file_path.lower().endswith(".rar"):
-                with rarfile.RarFile(file_path, "r") as rf:
+            elif file_path.lower().endswith('.rar'):
+                with rarfile.RarFile(file_path, 'r') as rf:
                     rf.extractall(temp_extract_dir)
+
+            # Mover archivos al directorio destino
             for root, _, files in os.walk(temp_extract_dir):
                 if "_MACOSX" in root:
                     continue
                 for file in files:
                     origen = os.path.join(root, file)
                     destino = os.path.join(target_dir, file)
+
+                    # Evitar duplicados
                     base, ext = os.path.splitext(file)
                     count = 1
                     while os.path.exists(destino):
                         destino = os.path.join(target_dir, f"{base}_{count}{ext}")
                         count += 1
                     shutil.move(origen, destino)
+
         finally:
             shutil.rmtree(temp_extract_dir, ignore_errors=True)
             os.remove(file_path)
 
     def _sanitize_filename(self, filename: str) -> str:
-        invalid_chars = [" ", ":", "/", "\\", "|", "?", "*", "<", ">", '"', "'",
-                         ";", ",", "&", "%", "$", "#"]
+        """Limpia el nombre del archivo de caracteres inválidos"""
+        invalid_chars = [" ", ":", "/", "\\", "|", "?", "*", "<", ">", '"', "'", ";", ",", "&", "%", "$", "#"]
         for char in invalid_chars:
             filename = filename.replace(char, "_")
         return filename
 
-    def download_attachments(self, codigo_cotizacion: str, rut_proveedor: str) -> dict:
-        """Descarga adjuntos usando el token Bearer proporcionado."""
-        output_path = os.path.join(OUTPUT_BASE_PATH,
-                                   str(codigo_cotizacion),
-                                   str(rut_proveedor))
+    def download_attachments(self, codigo_cotizacion: str, rut_proveedor: str,
+                           auto_login: bool = True) -> dict:
+        """
+        Descarga los adjuntos de una cotización específica.
+
+        Args:
+            codigo_cotizacion (str): Código de la solicitud de cotización
+            rut_proveedor (str): RUT del proveedor
+            auto_login (bool): Si debe hacer login automáticamente si no hay token
+
+        Returns:
+            dict: Información sobre la descarga con las siguientes claves:
+                - success (bool): Si la descarga fue exitosa
+                - files_downloaded (list): Lista de archivos descargados
+                - output_path (str): Ruta donde se guardaron los archivos
+                - error (str, optional): Mensaje de error si falló
+        """
+        # Verificar token
+        if not self.token_bearer and auto_login:
+            logging.info("No token found, performing login...")
+            self.login_mercado_publico()
+
+        if not self.token_bearer:
+            return {
+                "success": False,
+                "error": "No token available. Please login first.",
+                "files_downloaded": [],
+                "output_path": None
+            }
+
+        # Crear carpeta de salida
+        output_path = os.path.join(OUTPUT_BASE_PATH, str(codigo_cotizacion), str(rut_proveedor))
         os.makedirs(output_path, exist_ok=True)
+
         files_downloaded = []
 
         try:
-            # Paso 1: obtener oferta seleccionada
-            url_cot = f"{BASE_SERVICIOS}/v1/compra-agil/solicitud/{codigo_cotizacion}"
-            resp = self._get_with_retries(url_cot, headers=self._headers,
-                                          params={"size": 500, "page": 0})
-            ofertas = (resp.json().get("payload") or {}).get("ofertas", [])
-            oferta_id = next(
-                (o["id"] for o in ofertas if o.get("esOfertaSeleccionada") == 1),
-                None
-            )
-            if oferta_id is None:
+            # URLs de la API
+            url_cotizacion = f'https://servicios-compra-agil.mercadopublico.cl/v1/compra-agil/solicitud/{codigo_cotizacion}'
+
+            headers = {
+                'Authorization': f'Bearer {self.token_bearer}',
+                'Content-Type': 'application/json'
+            }
+
+            params = {'size': 500, 'page': 0}
+
+            # Obtener información de la cotización
+            response_cotizacion = self._get_with_retries(url_cotizacion, headers=headers, params=params)
+            data = response_cotizacion.json()
+            ofertas = data['payload']['ofertas']
+
+            # Buscar la oferta seleccionada
+            oferta_id = None
+            for oferta in ofertas:
+                if oferta['esOfertaSeleccionada'] == 1:
+                    oferta_id = oferta['id']
+                    break
+
+            if not oferta_id:
                 return {
                     "success": False,
-                    "error": "No se encontró oferta seleccionada en la cotización",
+                    "error": "No selected offer found",
                     "files_downloaded": [],
-                    "output_path": output_path,
+                    "output_path": output_path
                 }
 
-            # Paso 2: listar adjuntos
-            url_adj = f"{BASE_SERVICIOS}/v1/compra-agil/solicitud/cotizacion/{oferta_id}"
-            resp2 = self._get_with_retries(url_adj, headers=self._headers)
-            adjuntos = (resp2.json().get("payload") or {}).get("documentosAdjuntos", [])
+            # Obtener adjuntos
+            url_attachments = f'https://servicios-compra-agil.mercadopublico.cl/v1/compra-agil/solicitud/cotizacion/{oferta_id}'
+            response_attachments = self._get_with_retries(url_attachments, headers=headers)
 
-            if not adjuntos:
-                return {
-                    "success": True,
-                    "files_downloaded": [],
-                    "output_path": output_path,
-                    "total_files": 0,
-                }
+            data_attachments = response_attachments.json()
+            adjuntos = data_attachments['payload']['documentosAdjuntos']
 
-            # Paso 3: descargar cada adjunto
+            # Descargar cada adjunto
             for adjunto in adjuntos:
-                adjunto_id = adjunto["id"]
-                filename = self._sanitize_filename(adjunto["filename"])
+                adjunto_id = adjunto['id']
+                filename = self._sanitize_filename(adjunto['filename'])
+
+                url_download = f'https://servicios-compra-agil.mercadopublico.cl/v1/compra-agil/proveedor/cotizacion/descargarAdjunto/{adjunto_id}'
+
                 file_path = os.path.join(output_path, filename)
 
+                # No descargar si ya existe
                 if os.path.exists(file_path):
-                    logging.info(f"Ya existe, omitiendo: {filename}")
+                    logging.info(f"File already exists: {filename}")
                     files_downloaded.append(filename)
                     continue
 
-                url_dl = (f"{BASE_SERVICIOS}/v1/compra-agil/proveedor"
-                          f"/cotizacion/descargarAdjunto/{adjunto_id}")
-                resp_dl = self._get_with_retries(url_dl, headers=self._headers, stream=True)
+                response_download = self._get_with_retries(url_download, headers=headers, stream=True)
 
-                with open(file_path, "wb") as fout:
-                    shutil.copyfileobj(resp_dl.raw, fout)
+                with open(file_path, 'wb') as f:
+                    shutil.copyfileobj(response_download.raw, f)
 
-                logging.info(f"Descargado: {filename} ({os.path.getsize(file_path)} bytes)")
+                logging.info(f"Downloaded: {filename}")
                 files_downloaded.append(filename)
 
-                if filename.lower().endswith((".zip", ".rar")):
-                    logging.info(f"Extrayendo: {filename}")
+                # Extraer si es ZIP o RAR
+                if filename.lower().endswith(('.zip', '.rar')):
+                    logging.info(f"Extracting: {filename}")
                     self._extract_and_flatten(file_path, output_path)
 
             return {
                 "success": True,
                 "files_downloaded": files_downloaded,
                 "output_path": output_path,
-                "total_files": len(files_downloaded),
+                "total_files": len(files_downloaded)
             }
 
         except Exception as e:
-            logging.exception(f"Error descargando adjuntos con token: {e}")
+            logging.exception(f"Error downloading attachments: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "files_downloaded": files_downloaded,
-                "output_path": output_path,
+                "output_path": output_path
             }
 
     def close(self):
-        pass
-
-
-class LicitacionDownloaderAdapter:
-    """
-    Adapter que envuelve LicitacionAttachmentDownloader para que sea compatible
-    con la interfaz de BuscadorAttachmentDownloader/TokenAttachmentDownloader.
-
-    Descarga los adjuntos de la licitación (tech + econ) y los aplana en una
-    carpeta plana, de modo que process_attachments_simple pueda encontrarlos.
-    """
-
-    def download_attachments(self, codigo_licitacion: str, rut_proveedor: str) -> dict:
-        from utils.licitaciones.get_attachments_licitaciones import LicitacionAttachmentDownloader
-
-        output_base = os.getenv("ATTACHMENTS_OUTPUT_PATH", "attachments")
-        output_folder = os.path.join(output_base, codigo_licitacion, rut_proveedor)
-        os.makedirs(output_folder, exist_ok=True)
-
-        # Si ya hay archivos descargados, no volver a descargar
-        existing = [f for f in os.listdir(output_folder)
-                    if os.path.isfile(os.path.join(output_folder, f))]
-        if existing:
-            return {
-                "success": True,
-                "files_downloaded": existing,
-                "output_path": output_folder,
-                "total_files": len(existing),
-            }
-
-        dl = LicitacionAttachmentDownloader(
-            codigo_licitacion=codigo_licitacion,
-            rut_proveedor=rut_proveedor,
-            output_folder=output_folder,
-        )
-        success = dl.download_all()
-
-        # Aplanar: mover archivos de tech/ y econ/ al nivel raíz
-        files_downloaded = []
-        for subfolder in ["tech", "econ"]:
-            sub_path = os.path.join(output_folder, subfolder)
-            if not os.path.exists(sub_path):
-                continue
-            for fname in os.listdir(sub_path):
-                src = os.path.join(sub_path, fname)
-                if not os.path.isfile(src):
-                    continue
-                dst = os.path.join(output_folder, fname)
-                base, ext = os.path.splitext(fname)
-                count = 1
-                while os.path.exists(dst):
-                    dst = os.path.join(output_folder, f"{base}_{count}{ext}")
-                    count += 1
-                shutil.move(src, dst)
-                files_downloaded.append(os.path.basename(dst))
-            shutil.rmtree(sub_path, ignore_errors=True)
-
-        return {
-            "success": success,
-            "files_downloaded": files_downloaded,
-            "output_path": output_folder,
-            "total_files": len(files_downloaded),
-        }
-
-    def close(self):
-        pass
+        """Cierra el driver del navegador"""
+        if self.driver:
+            self.driver.quit()
+            logging.info("Driver closed")
 
 
 def download_attachments_simple(codigo_cotizacion: str, rut_proveedor: str,
-                                headless: bool = True,
-                                downloader: Optional[object] = None) -> dict:
+                                headless: bool = True) -> dict:
     """
-    Descarga adjuntos de una Compra Ágil.
-
-    - Si se pasa un downloader (ej. TokenAttachmentDownloader), lo usa directamente.
-    - Si no, usa la API pública del Buscador (sin login).
+    Función simple para descargar adjuntos sin necesidad de gestionar la clase.
 
     Args:
-        codigo_cotizacion: Código de la cotización (ej. "2927-350-COT25").
-        rut_proveedor: RUT del proveedor (usado para la ruta de salida).
-        headless: Ignorado — mantenido para compatibilidad.
-        downloader: Instancia de TokenAttachmentDownloader u otro downloader compatible.
+        codigo_cotizacion (str): Código de la solicitud de cotización
+        rut_proveedor (str): RUT del proveedor
+        headless (bool): Si ejecutar el navegador en modo headless
 
     Returns:
-        dict con claves: success, files_downloaded, output_path, total_files, error.
-    """
-    if downloader is not None and hasattr(downloader, "download_attachments"):
-        return downloader.download_attachments(codigo_cotizacion, rut_proveedor)
+        dict: Resultado de la descarga
 
-    dl = BuscadorAttachmentDownloader()
-    return dl.download_attachments(codigo_cotizacion, rut_proveedor)
+    Example:
+        >>> result = download_attachments_simple("12345678", "76123456-7")
+        >>> if result['success']:
+        >>>     print(f"Downloaded {result['total_files']} files to {result['output_path']}")
+    """
+    downloader = MercadoPublicoAttachmentDownloader(headless=headless)
+    try:
+        result = downloader.download_attachments(codigo_cotizacion, rut_proveedor)
+        return result
+    finally:
+        downloader.close()
+
+
