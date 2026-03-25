@@ -29,6 +29,8 @@ from utils.langsmith_utils import set_langsmith
 
 from token_utils.utils import TokenPayload
 
+set_langsmith()
+
 # Cargar variables de entorno
 load_dotenv()
 
