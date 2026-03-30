@@ -76,6 +76,17 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
         # TTL en segundos: 0 = sin caché (siempre re-descarga), >0 = usar caché si archivos son frescos
         cache_ttl = int(os.getenv('ATTACHMENTS_CACHE_TTL_SECONDS', '0'))
 
+        processed_dir = os.path.join(
+            os.getenv('ATTACHMENTS_OUTPUT_PATH', 'attachments'),
+            state['codigo_cotizacion'],
+            'processed'
+        )
+
+        def _clear_processed():
+            if os.path.exists(processed_dir):
+                shutil.rmtree(processed_dir, ignore_errors=True)
+                logging.info(f"  Carpeta processed limpiada: {processed_dir}")
+
         def _check_cache(directory):
             if not os.path.exists(directory):
                 return False, []
@@ -84,8 +95,9 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             if not files:
                 return False, []
             if cache_ttl <= 0:
-                # Sin caché: borrar y forzar re-descarga
+                # Sin caché: borrar descargas y processed para forzar reprocesamiento completo
                 shutil.rmtree(directory, ignore_errors=True)
+                _clear_processed()
                 logging.info(f"  Cache TTL=0 — directorio limpiado: {directory}")
                 return False, []
             # Con TTL: verificar antigüedad del archivo más reciente
@@ -95,6 +107,7 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             age = time.time() - newest_mtime
             if age > cache_ttl:
                 shutil.rmtree(directory, ignore_errors=True)
+                _clear_processed()
                 logging.info(f"  Cache expirado ({age:.0f}s > TTL {cache_ttl}s) — directorio limpiado")
                 return False, []
             return True, files
