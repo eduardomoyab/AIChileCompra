@@ -318,7 +318,8 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             os.path.join(processed_path, f)
             for f in os.listdir(processed_path)
             if f.endswith('.txt') and f != 'skipped_files.txt'
-        ]
+        ] if processed_path and os.path.exists(processed_path) else []
+
         skip_patterns = [p.strip().lower() for p in os.getenv('SKIP_FILENAME_PATTERNS', 'anexo,formulario,propuesta,simulacion').split(',') if p.strip()]
         tech_keywords = [kw.strip().lower() for kw in os.getenv(
             'TECH_FILENAME_KEYWORDS',
@@ -331,15 +332,34 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             return any(p in f for p in skip_patterns) and not any(kw in f for kw in tech_keywords)
 
         txt_files = [f for f in all_txt_files if not _is_admin(os.path.basename(f))] or all_txt_files
-        metadatas = [{"codigo_cotizacion": state['codigo_cotizacion'], "rut_proveedor": state['rut_proveedor'], "source_file": os.path.basename(f)} for f in txt_files]
-        chunk_size = int(os.getenv('ADJUNTOS_CHUNK_SIZE', '500'))
-        chunk_overlap = int(os.getenv('ADJUNTOS_CHUNK_OVERLAP', '100'))
-        vectorstore_shared = create_faiss_from_files(txt_files, metadatas, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+        if txt_files:
+            metadatas = [{"codigo_cotizacion": state['codigo_cotizacion'], "rut_proveedor": state['rut_proveedor'], "source_file": os.path.basename(f)} for f in txt_files]
+            chunk_size = int(os.getenv('ADJUNTOS_CHUNK_SIZE', '500'))
+            chunk_overlap = int(os.getenv('ADJUNTOS_CHUNK_OVERLAP', '100'))
+            vectorstore_shared = create_faiss_from_files(txt_files, metadatas, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            logging.info(f"✓ FAISS creado con {len(txt_files)} archivos de adjuntos")
+        else:
+            # Fallback: no hay adjuntos procesados → crear FAISS desde la descripción del producto
+            payload = state.get('payload', {})
+            fallback_text = (
+                f"Categoría: {payload.get('Categoria', '')}\n"
+                f"Nombre: {payload.get('productoname', '')}\n"
+                f"Descripción comprador: {payload.get('DescripcionProductoComprador', '')}\n"
+                f"Descripción proveedor: {payload.get('DescripcionProductoProveedor', '')}"
+            )
+            vectorstore_shared = create_faiss_from_texts(
+                [fallback_text],
+                [{"source": "descripcion_producto"}]
+            )
+            warning_msg = "No se encontraron adjuntos procesados — usando descripción del producto como contexto"
+            state = add_warning(state, warning_msg)
+            logging.warning(f"⚠️  {warning_msg}")
+
         state['adjuntos_vectorstore'] = vectorstore_shared
         state = add_tiempo(state, _NODO, "crear_faiss",
-                           f"Crear FAISS ({len(txt_files)} archivos, chunk={chunk_size})",
+                           f"Crear FAISS ({len(txt_files)} archivos adjuntos)",
                            time.time() - t0)
-        logging.info(f"✓ FAISS creado y guardado en estado")
 
         state['resultado_adjuntos'] = {"ROWNUM": state['payload'].get('ROWNUM')}
         logging.info(f"✓ Nodo RAG adjuntos completado — todos los campos se extraen via campos_manuales")

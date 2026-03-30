@@ -38,6 +38,8 @@ openpyxl==3.1.5
 python-docx==1.2.0
 lxml==5.3.0
 beautifulsoup4==4.12.3
+xlrd==2.0.1
+python-pptx==1.0.2
 
 # OCR local (PyMuPDF para texto nativo + EasyOCR para páginas escaneadas)
 pymupdf==1.25.3

@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import logging
 import unicodedata
 import gc
@@ -12,6 +13,20 @@ from typing import Optional, List
 import fitz  # PyMuPDF
 import easyocr
 from PIL import Image
+
+try:
+    import xlrd
+    _xlrd_available = True
+except ImportError:
+    _xlrd_available = False
+    logging.warning("xlrd no disponible — archivos .xls no serán procesados")
+
+try:
+    from pptx import Presentation
+    _pptx_available = True
+except ImportError:
+    _pptx_available = False
+    logging.warning("python-pptx no disponible — archivos .pptx no serán procesados")
 
 # Configuración por defecto
 MAX_PAGES = 15
@@ -192,6 +207,68 @@ class AttachmentProcessor:
             logging.error(f"Error extracting text from XLSX {xlsx_path}: {e}")
             return None
 
+    def _extract_text_from_xls(self, xls_path: str) -> Optional[str]:
+        """Extrae texto de archivos Excel antiguos (.xls)"""
+        if not _xlrd_available:
+            return None
+        try:
+            workbook = xlrd.open_workbook(xls_path)
+            text = ""
+            for sheet in workbook.sheets():
+                for row_idx in range(sheet.nrows):
+                    row_text = "\t".join([str(sheet.cell_value(row_idx, col)) for col in range(sheet.ncols)])
+                    text += row_text + "\n"
+            return text if text.strip() else None
+        except Exception as e:
+            logging.error(f"Error extracting text from XLS {xls_path}: {e}")
+            return None
+
+    def _extract_text_from_pptx(self, pptx_path: str) -> Optional[str]:
+        """Extrae texto de presentaciones PowerPoint (.pptx)"""
+        if not _pptx_available:
+            return None
+        try:
+            prs = Presentation(pptx_path)
+            text = ""
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        for para in shape.text_frame.paragraphs:
+                            text += " ".join([run.text for run in para.runs]) + "\n"
+            return text if text.strip() else None
+        except Exception as e:
+            logging.error(f"Error extracting text from PPTX {pptx_path}: {e}")
+            return None
+
+    def _extract_text_from_txt(self, txt_path: str) -> Optional[str]:
+        """Lee archivos de texto plano"""
+        for encoding in ('utf-8', 'latin-1', 'cp1252'):
+            try:
+                with open(txt_path, 'r', encoding=encoding) as f:
+                    text = f.read()
+                return text if text.strip() else None
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                logging.error(f"Error reading TXT {txt_path}: {e}")
+                return None
+        return None
+
+    def _extract_text_from_csv(self, csv_path: str) -> Optional[str]:
+        """Lee archivos CSV como texto tabular"""
+        for encoding in ('utf-8', 'latin-1', 'cp1252'):
+            try:
+                with open(csv_path, 'r', encoding=encoding, newline='') as f:
+                    reader = csv.reader(f)
+                    rows = ["\t".join(row) for row in reader]
+                return "\n".join(rows) if rows else None
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                logging.error(f"Error reading CSV {csv_path}: {e}")
+                return None
+        return None
+
     def _extract_text_from_file(self, file_path: str) -> Optional[str]:
         """Extrae texto según el tipo de archivo"""
         ext = file_path.lower()
@@ -206,6 +283,14 @@ class AttachmentProcessor:
             return self._extract_text_from_html(file_path)
         elif ext.endswith('.xlsx'):
             return self._extract_text_from_xlsx(file_path)
+        elif ext.endswith('.xls'):
+            return self._extract_text_from_xls(file_path)
+        elif ext.endswith('.pptx'):
+            return self._extract_text_from_pptx(file_path)
+        elif ext.endswith('.txt'):
+            return self._extract_text_from_txt(file_path)
+        elif ext.endswith('.csv'):
+            return self._extract_text_from_csv(file_path)
 
         return None
 
@@ -251,7 +336,7 @@ class AttachmentProcessor:
             for file in os.listdir(self.attachments_path):
                 file_path = os.path.join(self.attachments_path, file)
 
-                if not file.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png', '.docx', '.html', '.xlsx')):
+                if not file.lower().endswith(('.pdf', '.jpg', '.jpeg', '.png', '.docx', '.html', '.xlsx', '.xls', '.pptx', '.txt', '.csv')):
                     continue
 
                 base_name = os.path.splitext(file)[0]
