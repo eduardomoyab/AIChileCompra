@@ -41,6 +41,76 @@ logging.basicConfig(
 )
 
 
+# ========== NODO 0: CLASIFICAR CATEGORÍA (FILTRO DE ACCESORIOS) ==========
+
+def clasificar_categoria_node(state: CatalogacionState) -> CatalogacionState:
+    """
+    Nodo previo que determina si el producto es de la categoría buscada o es un accesorio.
+
+    Si clasificacion_prompt no está configurado, se omite la clasificación y el flujo continúa.
+    Si está configurado, un LLM evalúa las descripciones del producto y decide si es accesorio.
+    En caso de accesorio, el flujo termina con resultado vacío.
+    """
+    clasificacion_prompt = state.get('clasificacion_prompt')
+    if not clasificacion_prompt:
+        state['es_accesorio'] = False
+        return state
+
+    _NODO = "nodo_0_clasificar_categoria"
+    t_nodo = time.time()
+    logging.info(f"[NODO 0] Clasificando si el producto es accesorio o categoría principal")
+
+    payload = state.get('payload', {})
+    nombre = payload.get('productoname', '')
+    desc_comprador = payload.get('DescripcionProductoComprador', '')
+    desc_proveedor = payload.get('DescripcionProductoProveedor', '')
+    categoria = payload.get('Categoria', '')
+
+    prompt = f"""Eres un clasificador de productos de compras públicas. Tu única tarea es determinar si el producto descrito es de la categoría buscada o es un accesorio/producto diferente.
+
+CATEGORÍA BUSCADA:
+{clasificacion_prompt}
+
+PRODUCTO A CLASIFICAR:
+- Categoría declarada: {categoria}
+- Nombre: {nombre}
+- Descripción comprador: {desc_comprador}
+- Descripción proveedor: {desc_proveedor}
+
+INSTRUCCIONES:
+- Si el producto corresponde a la categoría buscada → responde EXACTAMENTE: NO_ACCESORIO
+- Si el producto es un accesorio, periférico, o no corresponde a la categoría → responde EXACTAMENTE: ACCESORIO
+- Responde SOLO una de esas dos palabras, sin explicación."""
+
+    try:
+        llm_provider = state.get('llm_provider') or os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')
+        llm = get_llm(model_provider=llm_provider, temperature=0.0)
+        response = llm.invoke(prompt)
+        decision = response.content.strip().upper()
+        es_accesorio = decision == 'ACCESORIO'
+        state['es_accesorio'] = es_accesorio
+        if es_accesorio:
+            logging.info(f"⛔ Producto clasificado como ACCESORIO — se omite catalogación")
+            state['resultado_final'] = {"ROWNUM": payload.get('ROWNUM'), "es_accesorio": True}
+            warning_msg = f"Producto '{nombre}' clasificado como accesorio — flujo omitido"
+            state = add_warning(state, warning_msg)
+        else:
+            logging.info(f"✓ Producto clasificado como categoría principal — continúa flujo")
+    except Exception as e:
+        logging.warning(f"Error en clasificación de categoría: {e} — se continúa el flujo por defecto")
+        state['es_accesorio'] = False
+
+    state = add_tiempo(state, _NODO, "total", "Clasificación categoría vs accesorio", time.time() - t_nodo)
+    return state
+
+
+def should_continue_after_clasificacion(state: CatalogacionState) -> str:
+    """Si es accesorio, termina. Si no, continúa a descargar adjuntos."""
+    if state.get('es_accesorio'):
+        return "END"
+    return "descargar_adjuntos"
+
+
 # ========== NODO 1: DESCARGAR ADJUNTOS ==========
 
 def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
@@ -870,13 +940,22 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             # Sub-fase 4b: similarity_search por campo (gratis, FAISS en memoria)
             t0 = time.time()
             k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
+            payload_tmp = state.get('payload', {})
+            desc_proveedor = payload_tmp.get('DescripcionProductoProveedor', '')
+            desc_comprador = payload_tmp.get('DescripcionProductoComprador', '')
+            nombre_producto = payload_tmp.get('productoname', '')
+            # Contexto de producto para enriquecer las queries y priorizar chunks del producto correcto
+            producto_contexto = " ".join(filter(None, [nombre_producto, desc_proveedor, desc_comprador]))[:300]
+
             campos_con_docs = []
             for item in campos_manuales:
                 campo = item["campo"]
                 contexto_extra = item.get("contexto", "")
                 k_campo = k + 1 if any(kw in campo.lower() for kw in ["procesador", "cpu", "processor"]) else k
+                # Query enriquecida: campo + descripción del producto para sesgar hacia el producto correcto
+                query = f"{campo} {producto_contexto}".strip()
                 try:
-                    docs = vectorstore.similarity_search(campo, k=k_campo)
+                    docs = vectorstore.similarity_search(query, k=k_campo)
                     fragmentos = "\n\n".join([
                         f"  Fragmento {i+1}:\n  {doc.page_content}"
                         for i, doc in enumerate(docs)
@@ -908,17 +987,17 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
 
         prompt = f"""Eres un experto en catalogación de productos tecnológicos. Para cada campo se entregan sus documentos más relevantes de la ficha técnica. Extrae el valor de cada campo usando SOLO sus propios documentos.
 
-Producto:
+PRODUCTO A CATALOGAR (usa estas descripciones para identificar el producto correcto en los documentos):
 - Categoría: {payload.get('Categoria', 'N/A')}
 - Nombre: {payload.get('productoname', 'N/A')}
 - Descripción Comprador: {payload.get('DescripcionProductoComprador', 'N/A')}
 - Descripción Proveedor: {payload.get('DescripcionProductoProveedor', 'N/A')}
 
 REGLAS GENERALES:
-1. La ficha técnica es la fuente principal. Las descripciones solo identifican el producto.
-2. Si un valor no aparece en los documentos del campo, usa "No especificado".
-3. No inventes información. Extrae SOLO lo que aparece explícitamente.
-4. Si hay múltiples productos en el contexto, extrae solo del producto principal.
+1. Las descripciones del producto identifican CUÁL producto catalogar. Úsalas para seleccionar la información correcta si hay varios productos en los documentos.
+2. La ficha técnica es la fuente principal de valores. Extrae SOLO lo que aparece explícitamente.
+3. Si hay múltiples productos en los documentos, extrae ÚNICAMENTE los valores del producto descrito arriba.
+4. Si un valor no aparece en los documentos del campo, usa "No especificado".
 
 --- CAMPOS A EXTRAER ---
 

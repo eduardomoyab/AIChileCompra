@@ -161,6 +161,7 @@ class CatalogarRequest(BaseModel):
     diccionario_similarity_threshold: float = Field(0.85, description="Score mínimo de similitud coseno para aceptar match del diccionario (0-1)")
     diccionario_llm_fallback: bool = Field(True, description="Si no hay match sobre el threshold, usar LLM para decidir entre top-3 candidatos")
     token_bearer: Optional[str] = Field(None, description="Token Bearer de Mercado Público. Si se provee, usa la API autenticada (servicios-compra-agil) en lugar del Buscador público.")
+    clasificacion_prompt: Optional[str] = Field(None, description="Descripción de la categoría buscada para filtrar accesorios. Ej: 'Computadores portátiles y de escritorio. No incluye monitores, teclados, mouse ni bolsos.' Si no se provee, no se filtra.")
 
 
 class CatalogarLicitacionRequest(BaseModel):
@@ -376,6 +377,7 @@ async def catalogar_producto(request: CatalogarRequest,
             campos_manuales_lista=campos_manuales_norm,
             diccionario_similarity_threshold=request.diccionario_similarity_threshold,
             diccionario_llm_fallback=request.diccionario_llm_fallback,
+            clasificacion_prompt=request.clasificacion_prompt,
         )
 
         # Preparar response

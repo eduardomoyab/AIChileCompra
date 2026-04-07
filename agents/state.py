@@ -64,6 +64,8 @@ class CatalogacionState(TypedDict, total=False):
     diccionario_similarity_threshold: Optional[float]  # Score mínimo para aceptar match (default 0.85)
     diccionario_llm_fallback: Optional[bool]  # Si usar LLM cuando no hay match sobre threshold
     texto_directo: Optional[str]  # Texto plano del producto (modo /catalogar/texto, sin adjuntos)
+    clasificacion_prompt: Optional[str]  # Descripción de la categoría para filtrar accesorios (ej: "Computadores portátiles y de escritorio")
+    es_accesorio: Optional[bool]  # True si el producto fue clasificado como accesorio y debe omitirse
 
     # ========== PROCESSING STATE ==========
     adjuntos_descargados: bool
@@ -96,6 +98,7 @@ def create_initial_state(
     campos_manuales_lista: Optional[List[Dict]] = None,
     diccionario_similarity_threshold: float = 0.85,
     diccionario_llm_fallback: bool = True,
+    clasificacion_prompt: Optional[str] = None,
 ) -> CatalogacionState:
     """
     Crea el estado inicial para el workflow de catalogación.
@@ -129,6 +132,8 @@ def create_initial_state(
         campos_manuales_lista=campos_manuales_lista,
         diccionario_similarity_threshold=diccionario_similarity_threshold,
         diccionario_llm_fallback=diccionario_llm_fallback,
+        clasificacion_prompt=clasificacion_prompt,
+        es_accesorio=None,
 
         # Processing state (all False/None initially)
         adjuntos_descargados=False,

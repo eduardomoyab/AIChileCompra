@@ -19,12 +19,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.state import CatalogacionState, create_initial_state
 from agents.nodos import (
+    clasificar_categoria_node,
     descargar_adjuntos_node,
     procesar_adjuntos_node,
     rag_adjuntos_node,
     campos_manuales_node,
     rag_diccionarios_node,
     consolidar_resultado_node,
+    should_continue_after_clasificacion,
     should_continue_after_download,
     should_continue_after_processing,
     should_extract_campos_manuales,
@@ -80,6 +82,9 @@ def create_catalogacion_graph():
 
     # ========== AGREGAR NODOS ==========
 
+    # Nodo 0: Clasificar categoría (filtro accesorios)
+    workflow.add_node("clasificar_categoria", clasificar_categoria_node)
+
     # Nodo 1: Descargar adjuntos
     workflow.add_node("descargar_adjuntos", descargar_adjuntos_node)
 
@@ -100,9 +105,19 @@ def create_catalogacion_graph():
 
     # ========== DEFINIR PUNTO DE ENTRADA ==========
 
-    workflow.set_entry_point("descargar_adjuntos")
+    workflow.set_entry_point("clasificar_categoria")
 
     # ========== AGREGAR EDGES (Conexiones) ==========
+
+    # Edge 0: clasificar_categoria -> descargar_adjuntos o END
+    workflow.add_conditional_edges(
+        "clasificar_categoria",
+        should_continue_after_clasificacion,
+        {
+            "descargar_adjuntos": "descargar_adjuntos",
+            "END": END
+        }
+    )
 
     # Edge 1: descargar_adjuntos -> procesar_adjuntos (condicional)
     workflow.add_conditional_edges(
@@ -172,6 +187,7 @@ def ejecutar_catalogacion(
     campos_manuales_lista: List[Dict] = None,
     diccionario_similarity_threshold: float = 0.85,
     diccionario_llm_fallback: bool = True,
+    clasificacion_prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Ejecuta el workflow completo de catalogación usando el grafo.
@@ -216,6 +232,7 @@ def ejecutar_catalogacion(
         campos_manuales_lista=campos_manuales_lista,
         diccionario_similarity_threshold=diccionario_similarity_threshold,
         diccionario_llm_fallback=diccionario_llm_fallback,
+        clasificacion_prompt=clasificacion_prompt,
     )
 
     # Agregar downloader al state si se proporcionó
