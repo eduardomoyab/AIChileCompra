@@ -877,6 +877,7 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
 
     try:
         texto_directo = state.get('texto_directo')
+        chunks_ancla = ""  # Se rellena en modo adjuntos; vacío en modo texto
 
         if texto_directo:
             # --- MODO TEXTO: sin FAISS, el texto completo es el contexto ---
@@ -937,25 +938,45 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
                 logging.info(f"✓ FAISS creado ({len(txt_files)} archivos, chunk={chunk_size})")
             state = add_tiempo(state, _NODO, "faiss", "FAISS listo", time.time() - t0)
 
-            # Sub-fase 4b: similarity_search por campo (gratis, FAISS en memoria)
+            # Sub-fase 4b: búsqueda de anclaje + similarity_search por campo
             t0 = time.time()
             k = int(os.getenv('CAMPOS_MANUALES_SEARCH_K', '3'))
             payload_tmp = state.get('payload', {})
             desc_proveedor = payload_tmp.get('DescripcionProductoProveedor', '')
             desc_comprador = payload_tmp.get('DescripcionProductoComprador', '')
             nombre_producto = payload_tmp.get('productoname', '')
-            # Contexto de producto para enriquecer las queries y priorizar chunks del producto correcto
             producto_contexto = " ".join(filter(None, [nombre_producto, desc_proveedor, desc_comprador]))[:300]
+
+            # Búsqueda de anclaje: chunks que identifican ESTE producto específico
+            # Se usa para construir un mini-FAISS con solo los chunks del producto correcto
+            chunks_ancla = ""
+            search_store = vectorstore  # fallback: FAISS global
+            try:
+                k_ancla = int(os.getenv('CAMPOS_MANUALES_ANCLA_K', '8'))
+                docs_ancla = vectorstore.similarity_search(producto_contexto, k=k_ancla)
+                if docs_ancla:
+                    chunks_ancla = "\n\n".join([
+                        f"  Fragmento {i+1}:\n  {doc.page_content}"
+                        for i, doc in enumerate(docs_ancla)
+                    ])
+                    # Mini-FAISS con solo los chunks del producto: las búsquedas por campo
+                    # ya no ven specs de otros productos del mismo documento
+                    ancla_texts = [d.page_content for d in docs_ancla]
+                    ancla_metas = [d.metadata for d in docs_ancla]
+                    search_store = create_faiss_from_texts(ancla_texts, ancla_metas)
+                    logging.info(f"  Anclaje: mini-FAISS creado con {len(docs_ancla)} chunks del producto")
+            except Exception as e:
+                logging.warning(f"  Error en búsqueda de anclaje, usando FAISS global: {e}")
 
             campos_con_docs = []
             for item in campos_manuales:
                 campo = item["campo"]
                 contexto_extra = item.get("contexto", "")
                 k_campo = k + 1 if any(kw in campo.lower() for kw in ["procesador", "cpu", "processor"]) else k
-                # Query enriquecida: campo + descripción del producto para sesgar hacia el producto correcto
-                query = f"{campo} {producto_contexto}".strip()
+                # Búsqueda sobre el mini-FAISS del producto (o FAISS global si falló el anclaje)
+                k_campo = min(k_campo, len(docs_ancla) if search_store is not vectorstore else k_campo)
                 try:
-                    docs = vectorstore.similarity_search(query, k=k_campo)
+                    docs = search_store.similarity_search(campo, k=k_campo)
                     fragmentos = "\n\n".join([
                         f"  Fragmento {i+1}:\n  {doc.page_content}"
                         for i, doc in enumerate(docs)
@@ -968,8 +989,8 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
                     "contexto": contexto_extra,
                     "fragmentos": fragmentos,
                 })
-            logging.info(f"  {len(campos_con_docs)} campos con documentos RAG individuales")
-            state = add_tiempo(state, _NODO, "searches", "Similarity searches", time.time() - t0)
+            logging.info(f"  {len(campos_con_docs)} campos con documentos RAG del producto")
+            state = add_tiempo(state, _NODO, "searches", "Anclaje + mini-FAISS + searches", time.time() - t0)
 
         # Sub-fase 4c: 1 sola llamada LLM con contexto por campo
         t0 = time.time()
@@ -985,18 +1006,25 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             for c in campos_con_docs
         ])
 
+        seccion_ancla = f"""--- SECCIÓN DEL DOCUMENTO QUE CORRESPONDE A ESTE PRODUCTO ---
+(Usa estos fragmentos para identificar con certeza de qué producto se habla en los documentos)
+
+{chunks_ancla}
+
+""" if chunks_ancla else ""
+
         prompt = f"""Eres un experto en catalogación de productos tecnológicos. Para cada campo se entregan sus documentos más relevantes de la ficha técnica. Extrae el valor de cada campo usando SOLO sus propios documentos.
 
-PRODUCTO A CATALOGAR (usa estas descripciones para identificar el producto correcto en los documentos):
+PRODUCTO A CATALOGAR:
 - Categoría: {payload.get('Categoria', 'N/A')}
 - Nombre: {payload.get('productoname', 'N/A')}
 - Descripción Comprador: {payload.get('DescripcionProductoComprador', 'N/A')}
 - Descripción Proveedor: {payload.get('DescripcionProductoProveedor', 'N/A')}
 
-REGLAS GENERALES:
-1. Las descripciones del producto identifican CUÁL producto catalogar. Úsalas para seleccionar la información correcta si hay varios productos en los documentos.
-2. La ficha técnica es la fuente principal de valores. Extrae SOLO lo que aparece explícitamente.
-3. Si hay múltiples productos en los documentos, extrae ÚNICAMENTE los valores del producto descrito arriba.
+{seccion_ancla}REGLAS GENERALES:
+1. El "PRODUCTO A CATALOGAR" y la "SECCIÓN DEL DOCUMENTO" identifican exactamente cuál producto catalogar.
+2. Si los documentos contienen múltiples productos, extrae ÚNICAMENTE los valores del producto identificado arriba. Ignora los demás.
+3. La ficha técnica es la fuente principal de valores. Extrae SOLO lo que aparece explícitamente.
 4. Si un valor no aparece en los documentos del campo, usa "No especificado".
 
 --- CAMPOS A EXTRAER ---
