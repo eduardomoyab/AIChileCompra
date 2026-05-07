@@ -681,3 +681,175 @@ flowchart LR
 
     OA & GA & DA --> R["Instancia LangChain\ncompatible con todos los nodos"]
 ```
+
+---
+
+### Servicios externos
+
+El sistema depende de los siguientes servicios externos. Los servicios opcionales se activan solo si se configuran las claves correspondientes en el `.env`.
+
+```mermaid
+graph LR
+    API["AIChileCompra\n(Railway)"]
+
+    API -->|"gpt-4o-mini\nExtracción de atributos\nClasificación de accesorios\nLLM fallback diccionarios"| OAI["OpenAI API"]
+    API -->|"text-embedding-3-small\nEmbeddings para FAISS\n(diccionarios + adjuntos)"| OAI
+
+    API -->|"API pública Buscador\nDescarga sin autenticación"| MP["Mercado Público\nmercadopublico.cl"]
+    API -->|"API autenticada\n(token Bearer)\nDescarga con sesión"| MP
+
+    API -. "opcional" .-> LS["LangSmith\ntrazabilidad de llamadas LLM"]
+    API -. "opcional" .-> LP["LlamaParse\nOCR cloud para PDFs\n(1000 pág/día gratis)"]
+```
+
+| Servicio | Rol | Variable de entorno |
+|---|---|---|
+| **OpenAI** `gpt-4o-mini` | LLM principal: extracción de atributos, clasificación de accesorios, LLM fallback de diccionarios | `OPENAI_API_KEY`, `OPENAI_MODEL` |
+| **OpenAI** `text-embedding-3-small` | Embeddings vectoriales para FAISS (diccionarios y adjuntos) | `OPENAI_API_KEY` |
+| **Mercado Público** | Fuente de archivos del proveedor (fichas técnicas, anexos) | Claves embebidas en código |
+| **LangSmith** _(opcional)_ | Observabilidad y trazabilidad de llamadas LLM | `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` |
+| **LlamaParse** _(opcional)_ | OCR cloud para PDFs escaneados, como alternativa a EasyOCR local | `LLAMA_CLOUD_API_KEY` |
+
+---
+
+### Despliegue en Railway
+
+La API se despliega como contenedor Docker en Railway. El `Dockerfile` incluye la descarga de modelos de EasyOCR y HuggingFace durante el build para que el arranque en producción sea inmediato.
+
+```mermaid
+graph LR
+    subgraph Build["Docker build (python:3.11-slim)"]
+        B1["Instala dependencias\nsistema (poppler, libgl)"]
+        B2["pip install requirements.txt"]
+        B3["Pre-descarga EasyOCR\ny HuggingFace embeddings"]
+    end
+
+    subgraph Runtime["Contenedor en Railway"]
+        G["Gunicorn\n4 workers uvicorn\ntimeout 600s"]
+        E["Variables de entorno\nconfiguradas en Railway\ndashboard"]
+    end
+
+    Build --> Runtime
+    Runtime -->|"puerto 8000"| PUB["URL pública\nproyecto.railway.app"]
+```
+
+**Variables de entorno requeridas en Railway:**
+
+```
+OPENAI_API_KEY=sk-...
+API_KEY=clave-secreta-de-autenticacion
+DEFAULT_LLM_PROVIDER=openai
+OPENAI_MODEL=gpt-4o-mini
+KMP_DUPLICATE_LIB_OK=TRUE
+```
+
+> El token de Mercado Público se persiste en `attachments/.token_store.json` dentro del contenedor. En Railway, el filesystem es efímero — si el servicio se reinicia, el token se pierde y debe re-setearse vía `POST /set-token`.
+
+---
+
+### Prompts de los agentes
+
+El sistema usa tres prompts distintos dependiendo del nodo que se ejecute.
+
+#### Agente clasificador de accesorios (`clasificar_categoria`)
+
+Se ejecuta solo cuando `clasificacion_prompt` está configurado en el request. Decide si el producto es de la categoría buscada o es un accesorio y debe ignorarse.
+
+**Modelo:** `gpt-4o-mini` · **Temperatura:** `0.0`
+
+```
+Eres un clasificador de productos de compras públicas. Tu única tarea es determinar
+si el producto descrito es de la categoría buscada o es un accesorio/producto diferente.
+
+CATEGORÍA BUSCADA:
+Computadores portátiles y de escritorio. No incluye monitores, teclados, mouse ni bolsos.
+
+PRODUCTO A CLASIFICAR:
+- Categoría declarada: Computadores
+- Nombre: Mouse inalámbrico USB
+- Descripción comprador: MOUSE INALAMBRICO NEGRO 1600DPI
+- Descripción proveedor: Mouse Logitech M185 inalámbrico
+
+INSTRUCCIONES:
+- Si el producto corresponde a la categoría buscada → responde EXACTAMENTE: NO_ACCESORIO
+- Si el producto es un accesorio, periférico, o no corresponde a la categoría → responde EXACTAMENTE: ACCESORIO
+- Responde SOLO una de esas dos palabras, sin explicación.
+```
+
+**Respuesta esperada:** `ACCESORIO` o `NO_ACCESORIO`
+
+---
+
+#### Agente de extracción de campo (`campos_manuales`)
+
+Se lanza un agente en paralelo por cada campo en `campos_manuales`. Cada agente recibe los chunks más relevantes del FAISS (top-k por similitud semántica con el nombre del campo) como contexto.
+
+**Modelo:** `gpt-4o-mini` · **Temperatura:** `0.1`
+
+```
+Eres un agente especializado en extraer información sobre **Procesador** de productos.
+
+Producto:
+- Categoría: Computadores
+- Nombre: Notebook, laptop o computador portátil excepto Tablet PC
+- Descripción Comprador: NOTEBOOK RYZEN 7, 16GB DE RAM, SSD M.2 1TB, PANTALLA 13.3"
+- Descripción Proveedor: NOTEBOOK RYZEN 7 5700U HP PAVILION
+
+Contexto de documentos:
+Fragmento 1:
+Procesador: AMD Ryzen™ 7 5700U (1.8 GHz velocidad base, hasta 4.3 GHz velocidad máx,
+8 núcleos, 16 MB caché L3, 15 W TDP)
+RAM: 16 GB DDR4-3200 MHz (1 x 16 GB)
+Almacenamiento: 512 GB M.2 PCIe® NVMe™ SSD
+
+Fragmento 2:
+[...más chunks relevantes del mismo archivo o de otros adjuntos...]
+
+Tu tarea es extraer ÚNICAMENTE la información sobre **Procesador** del producto.
+
+REGLAS GENERALES:
+1. Responde SOLO con el valor extraído, SIN explicaciones ni texto adicional
+2. FUENTE PRINCIPAL: El "Contexto de documentos" (fichas técnicas adjuntas) es la fuente
+   autorizada. Si la ficha técnica y la descripción del proveedor difieren, usa siempre la ficha.
+3. FALLBACK: Solo si la información NO aparece en los documentos adjuntos, puedes usar la
+   "Descripción Proveedor" como referencia secundaria. Si tampoco está ahí, responde "No especificado".
+4. NO inventes información — extrae SOLO lo que aparece explícitamente en los documentos
+5. Sé PRECISO y conciso
+6. FOCO EN EL PRODUCTO PRINCIPAL: el contexto puede contener fichas de múltiples productos
+   (el computador principal más accesorios). Extrae el atributo ÚNICAMENTE del producto
+   identificado por la descripción del comprador/proveedor.
+
+INSTRUCCIONES ESPECÍFICAS PARA ESTE CAMPO:
+- Extrae el modelo exacto y completo (ej: 'Intel Core i7-1355U', 'AMD Ryzen 7 7735U').
+  Si la ficha técnica y la descripción del proveedor difieren, usa siempre la ficha técnica.
+
+Valor de Procesador:
+```
+
+**Respuesta esperada:** `AMD Ryzen 7 5700U`
+
+---
+
+#### LLM fallback del normalizador (`rag_diccionarios`)
+
+Se invoca cuando la similitud coseno entre el valor extraído y los candidatos del diccionario está por debajo del `diccionario_similarity_threshold`. El LLM decide si alguno de los top-3 candidatos es el mismo concepto.
+
+**Modelo:** `gpt-4o-mini` · **Temperatura:** configurada por `TEMPERATURE_ADJUNTOS` (default `0.7`)
+
+```
+Se extrajo el valor "Win 11 Pro" para el campo "Sistema Operativo".
+
+Candidatos del diccionario (por similitud descendente):
+1. Microsoft Windows 11 Pro (similitud: 0.81)
+2. Microsoft Windows 11 Home (similitud: 0.79)
+3. Microsoft Windows 10 Pro (similitud: 0.74)
+
+¿Alguno de estos candidatos es el mismo producto/versión base que "Win 11 Pro"?
+Criterio: acepta si el candidato es la versión estándar del mismo producto
+(ej: 'Windows 11 Home Single Language' → 'Microsoft Windows 11 Home',
+'Win 11 Pro' → 'Microsoft Windows 11 Pro', 'macOS Sonoma' → 'macOS').
+Responde ÚNICAMENTE con el texto exacto del candidato si hay match,
+o con la palabra "ninguno" si ninguno corresponde.
+```
+
+**Respuesta esperada:** `Microsoft Windows 11 Pro`
