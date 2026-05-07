@@ -380,18 +380,40 @@ class LicitacionDownloaderAdapter:
 
         output_base = os.getenv("ATTACHMENTS_OUTPUT_PATH", "attachments")
         output_folder = os.path.join(output_base, codigo_licitacion, rut_proveedor)
-        os.makedirs(output_folder, exist_ok=True)
+        processed_dir = os.path.join(output_base, codigo_licitacion, "processed")
 
-        # Si ya hay archivos descargados, no volver a descargar
-        existing = [f for f in os.listdir(output_folder)
-                    if os.path.isfile(os.path.join(output_folder, f))]
-        if existing:
-            return {
-                "success": True,
-                "files_downloaded": existing,
-                "output_path": output_folder,
-                "total_files": len(existing),
-            }
+        cache_ttl = int(os.getenv("ATTACHMENTS_CACHE_TTL_SECONDS", "0"))
+
+        # Misma lógica de caché que compra ágil
+        if os.path.exists(output_folder):
+            existing = [f for f in os.listdir(output_folder)
+                        if os.path.isfile(os.path.join(output_folder, f))]
+            if existing:
+                if cache_ttl <= 0:
+                    shutil.rmtree(output_folder, ignore_errors=True)
+                    if os.path.exists(processed_dir):
+                        shutil.rmtree(processed_dir, ignore_errors=True)
+                    logging.info(f"  Cache TTL=0 — directorio limpiado: {output_folder}")
+                else:
+                    newest_mtime = max(
+                        os.path.getmtime(os.path.join(output_folder, f)) for f in existing
+                    )
+                    age = time.time() - newest_mtime
+                    if age > cache_ttl:
+                        shutil.rmtree(output_folder, ignore_errors=True)
+                        if os.path.exists(processed_dir):
+                            shutil.rmtree(processed_dir, ignore_errors=True)
+                        logging.info(f"  Cache expirado ({age:.0f}s > TTL {cache_ttl}s) — directorio limpiado")
+                    else:
+                        logging.info(f"✓ Archivos ya descargados: {len(existing)} archivos en caché")
+                        return {
+                            "success": True,
+                            "files_downloaded": existing,
+                            "output_path": output_folder,
+                            "total_files": len(existing),
+                        }
+
+        os.makedirs(output_folder, exist_ok=True)
 
         dl = LicitacionAttachmentDownloader(
             codigo_licitacion=codigo_licitacion,

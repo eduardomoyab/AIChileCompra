@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents.state import CatalogacionState, add_error, add_warning, add_tiempo
 from agents.normalizador import Normalizador
 from agents.get_agent import get_llm
-from agents.get_vectorstore import create_faiss_from_files
+from agents.get_vectorstore import create_faiss_from_files, create_faiss_from_texts
 from utils.get_attachments import download_attachments_simple
 from utils.process_attachments import process_attachments_simple
 

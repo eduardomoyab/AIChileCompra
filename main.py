@@ -172,7 +172,10 @@ class CatalogarLicitacionRequest(BaseModel):
     rut_proveedor: str = Field(..., description="RUT del proveedor")
     use_diccionarios: bool = Field(True, description="Si usar normalización con diccionarios")
     llm_provider: Optional[str] = Field(None, description="Proveedor de LLM (openai, gemini, deepseek). None = usa DEFAULT_LLM_PROVIDER del .env")
-    campos_manuales: Optional[List[str]] = Field(None, description="Lista de campos adicionales a extraer (ej: ['Pantalla (Pulgadas)', 'Procesador'])")
+    campos_manuales: Optional[List[Union[str, CampoManualItem]]] = Field(None, description="Lista de campos a extraer. Puede ser strings simples o dicts con {campo, contexto}")
+    diccionario_similarity_threshold: float = Field(0.85, description="Score mínimo de similitud coseno para aceptar match del diccionario (0-1)")
+    diccionario_llm_fallback: bool = Field(True, description="Si no hay match sobre el threshold, usar LLM para decidir entre top-3 candidatos")
+    clasificacion_prompt: Optional[str] = Field(None, description="Descripción de la categoría buscada para filtrar accesorios. Ej: 'Computadores portátiles y de escritorio. No incluye monitores, teclados, mouse ni bolsos.' Si no se provee, no se filtra.")
 
     @validator('llm_provider')
     def validar_llm_provider(cls, v):
@@ -443,6 +446,14 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
     try:
         logging.info(f"Catalogando licitación - Código: {request.codigo_licitacion}, Proveedor: {request.rut_proveedor}")
 
+        # Normalizar campos_manuales: List[str | CampoManualItem] → List[Dict]
+        campos_manuales_norm = []
+        for item in (request.campos_manuales or []):
+            if isinstance(item, str):
+                campos_manuales_norm.append({"campo": item, "contexto": ""})
+            else:
+                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+
         # Ejecutar catalogación de licitación
         resultado_completo = extraer_atributos_licitacion(
             payload=request.payload.dict(),
@@ -450,8 +461,10 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
             rut_proveedor=request.rut_proveedor,
             use_diccionarios=request.use_diccionarios,
             llm_provider=request.llm_provider,
-            campos_manuales=request.campos_manuales,
-            downloader=None  # No se usa para licitaciones
+            campos_manuales=campos_manuales_norm,
+            diccionario_similarity_threshold=request.diccionario_similarity_threshold,
+            diccionario_llm_fallback=request.diccionario_llm_fallback,
+            clasificacion_prompt=request.clasificacion_prompt,
         )
 
         # Preparar response
@@ -468,6 +481,7 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
                 "adjuntos_procesados": resultado_completo.get('adjuntos_procesados', False),
                 "use_diccionarios": request.use_diccionarios,
                 "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+                "tiempos": resultado_completo.get('tiempos', []),
                 "tipo": "licitacion"
             }
         )

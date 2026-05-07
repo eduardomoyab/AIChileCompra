@@ -66,7 +66,10 @@ def extraer_atributos_licitacion(
     rut_proveedor: str,
     use_diccionarios: bool = True,
     llm_provider: str = None,
-    campos_manuales: List[str] = None,
+    campos_manuales: List[Dict] = None,
+    diccionario_similarity_threshold: float = 0.85,
+    diccionario_llm_fallback: bool = True,
+    clasificacion_prompt: str = None,
     downloader: Any = None
 ) -> Dict[str, Any]:
     """
@@ -85,7 +88,10 @@ def extraer_atributos_licitacion(
         rut_proveedor: RUT del proveedor.
         use_diccionarios: Si usar normalización con diccionarios.
         llm_provider: Proveedor de LLM. None = usa DEFAULT_LLM_PROVIDER.
-        campos_manuales: Lista de campos adicionales a extraer.
+        campos_manuales: Lista de campos normalizados [{"campo": ..., "contexto": ...}].
+        diccionario_similarity_threshold: Score mínimo de similitud para match del diccionario.
+        diccionario_llm_fallback: Si usar LLM como fallback cuando no hay match suficiente.
+        clasificacion_prompt: Descripción de la categoría para filtrar accesorios.
         downloader: Ignorado — licitaciones siempre usan LicitacionDownloaderAdapter.
     """
     # Validar payload
@@ -111,6 +117,9 @@ def extraer_atributos_licitacion(
         llm_provider=llm_provider,
         downloader=adapter,
         campos_manuales_lista=campos_manuales,
+        diccionario_similarity_threshold=diccionario_similarity_threshold,
+        diccionario_llm_fallback=diccionario_llm_fallback,
+        clasificacion_prompt=clasificacion_prompt,
     )
 
 

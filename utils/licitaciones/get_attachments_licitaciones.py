@@ -200,16 +200,28 @@ class LicitacionAttachmentDownloader:
                 f"DWNL$grdId${ctl_id}$search.y": "14",
                 "DWNL$ctl10": ""
             }
-            r = requests.post(full_url, headers=self.headers, data=data)
+            r = self.session.post(full_url, headers=self.headers, data=data)
             content = r.content
             ext = self.detectar_extension(content)
 
-            # Asegurar extensión
+            # Rechazar respuestas HTML (portal devuelve página de error o sesión vencida)
+            if ext == 'bin' and (content.lstrip()[:15].lower().startswith(b'<!doctype') or
+                                  content.lstrip()[:6].lower().startswith(b'<html')):
+                snippet = content[:500].decode('utf-8', errors='replace').replace('\n', ' ').strip()
+                logging.warning(f"Respuesta HTML inesperada para {nombre_archivo} — omitiendo. Primeros 500 chars: {snippet}")
+                return False
+
+            # Usar extensión detectada si el nombre no trae una, o si no coincide con el contenido real
+            detected_name = nombre_archivo
             if '.' not in nombre_archivo:
-                nombre_archivo += f".{ext}"
+                detected_name = f"{nombre_archivo}.{ext}"
+            else:
+                declared_ext = os.path.splitext(nombre_archivo)[1].lstrip('.').lower()
+                if declared_ext != ext and ext != 'bin':
+                    logging.warning(f"Extensión declarada .{declared_ext} no coincide con contenido detectado .{ext} para {nombre_archivo}")
 
             # Limpiar y hacer nombre único
-            safe_name = nombre_archivo.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            safe_name = detected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
             original_safe_name = safe_name
             count = 1
             full_path = os.path.join(folder, safe_name)
@@ -236,14 +248,10 @@ class LicitacionAttachmentDownloader:
             base_url = "https://www.mercadopublico.cl/BID/Modules/POPUPS/ViewBidAttachment.aspx"
             full_url = f"{base_url}?enc={enc_value}"
 
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": full_url
-            }
+            self.headers["Referer"] = full_url
 
-            # GET inicial
-            r = requests.get(full_url, headers=headers)
+            # GET inicial usando la sesión establecida (mantiene cookies de navegación)
+            r = self.session.get(full_url, headers=self.headers)
             soup = BeautifulSoup(r.text, "html.parser")
             viewstate = soup.find("input", {"id": "__VIEWSTATE"})["value"]
             viewstategen = soup.find("input", {"id": "__VIEWSTATEGENERATOR"})["value"]
@@ -259,11 +267,13 @@ class LicitacionAttachmentDownloader:
                         nombre_archivo = span_tag.text.strip()
                         anexos[ctl_id] = nombre_archivo
 
-            # Descargar cada anexo
+            # Descargar cada anexo — contar solo los exitosos
+            count = 0
             for ctl_id, nombre_archivo in anexos.items():
-                self.descargar_anexo(viewstate, viewstategen, ctl_id, nombre_archivo, folder, full_url)
+                if self.descargar_anexo(viewstate, viewstategen, ctl_id, nombre_archivo, folder, full_url):
+                    count += 1
 
-            return len(anexos)
+            return count
 
         except Exception as e:
             logging.exception(f"Error descargando anexos de enc {enc_value}: {e}")
