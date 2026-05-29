@@ -124,7 +124,7 @@ class ProductoPayload(BaseModel):
     @validator('Categoria')
     def validar_categoria(cls, v):
         """Valida que la categoría sea soportada"""
-        categorias_soportadas = ['Computadores']  # Por ahora solo Computadores
+        categorias_soportadas = ['Computadores', 'Medicamentos']
         if v not in categorias_soportadas:
             raise ValueError(
                 f"Categoría '{v}' no soportada. "
@@ -223,7 +223,7 @@ class CatalogarTextoRequest(BaseModel):
 
     @validator('categoria')
     def validar_categoria(cls, v):
-        categorias_soportadas = ['Computadores']
+        categorias_soportadas = ['Computadores', 'Medicamentos']
         if v not in categorias_soportadas:
             raise ValueError(f"Categoría '{v}' no soportada. Categorías disponibles: {categorias_soportadas}")
         return v
