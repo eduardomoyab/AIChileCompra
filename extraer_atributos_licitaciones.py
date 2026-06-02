@@ -53,9 +53,11 @@ def validar_payload(payload: Dict[str, Any]) -> tuple[bool, List[str]]:
         if campo not in payload:
             errores.append(f"Campo requerido faltante: {campo}")
 
-    # Validar que Categoria sea Computadores (por ahora)
-    if 'Categoria' in payload and payload['Categoria'] != 'Computadores':
-        errores.append(f"Categoría '{payload['Categoria']}' no soportada. Solo 'Computadores' está disponible.")
+    # Validar categoría soportada
+    _cats = os.getenv("CATEGORIAS_SOPORTADAS", "Computadores,Medicamentos")
+    categorias_soportadas = [c.strip() for c in _cats.split(",") if c.strip()]
+    if 'Categoria' in payload and payload['Categoria'] not in categorias_soportadas:
+        errores.append(f"Categoría '{payload['Categoria']}' no soportada. Categorías disponibles: {categorias_soportadas}")
 
     return len(errores) == 0, errores
 

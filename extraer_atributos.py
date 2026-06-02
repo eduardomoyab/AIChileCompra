@@ -135,25 +135,18 @@ def extraer_atributos(
     logging.info(f"Proveedor: {rut_proveedor}")
     logging.info(f"{'='*80}\n")
 
-    # Ejecutar workflow según categoría
-    if categoria == 'Computadores':
-        resultado = ejecutar_catalogacion(
-            codigo_cotizacion=codigo_cotizacion,
-            rut_proveedor=rut_proveedor,
-            payload=payload,
-            use_diccionarios=use_diccionarios,
-            llm_provider=llm_provider,
-            downloader=downloader,
-            campos_manuales_lista=campos_manuales_lista,
-            diccionario_similarity_threshold=diccionario_similarity_threshold,
-            diccionario_llm_fallback=diccionario_llm_fallback,
-            clasificacion_prompt=clasificacion_prompt,
-        )
-    else:
-        raise ValueError(
-            f"Categoría '{categoria}' no soportada. "
-            f"Categorías disponibles: ['Computadores']"
-        )
+    resultado = ejecutar_catalogacion(
+        codigo_cotizacion=codigo_cotizacion,
+        rut_proveedor=rut_proveedor,
+        payload=payload,
+        use_diccionarios=use_diccionarios,
+        llm_provider=llm_provider,
+        downloader=downloader,
+        campos_manuales_lista=campos_manuales_lista,
+        diccionario_similarity_threshold=diccionario_similarity_threshold,
+        diccionario_llm_fallback=diccionario_llm_fallback,
+        clasificacion_prompt=clasificacion_prompt,
+    )
 
     return resultado
 
