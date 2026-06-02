@@ -78,6 +78,10 @@ app.add_middleware(
 _raw_keys = os.getenv("API_KEY", "your-secret-api-key-here")
 API_KEYS = {k.strip() for k in _raw_keys.split(",") if k.strip()}
 
+# Categorías soportadas desde .env (separadas por coma)
+_raw_cats = os.getenv("CATEGORIAS_SOPORTADAS", "Computadores,Medicamentos")
+CATEGORIAS_SOPORTADAS = [c.strip() for c in _raw_cats.split(",") if c.strip()]
+
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 async def require_api_key(x_api_key: Optional[str] = Depends(api_key_header)):
@@ -124,11 +128,10 @@ class ProductoPayload(BaseModel):
     @validator('Categoria')
     def validar_categoria(cls, v):
         """Valida que la categoría sea soportada"""
-        categorias_soportadas = ['Computadores', 'Medicamentos']
-        if v not in categorias_soportadas:
+        if v not in CATEGORIAS_SOPORTADAS:
             raise ValueError(
                 f"Categoría '{v}' no soportada. "
-                f"Categorías disponibles: {categorias_soportadas}"
+                f"Categorías disponibles: {CATEGORIAS_SOPORTADAS}"
             )
         return v
 
@@ -223,9 +226,8 @@ class CatalogarTextoRequest(BaseModel):
 
     @validator('categoria')
     def validar_categoria(cls, v):
-        categorias_soportadas = ['Computadores', 'Medicamentos']
-        if v not in categorias_soportadas:
-            raise ValueError(f"Categoría '{v}' no soportada. Categorías disponibles: {categorias_soportadas}")
+        if v not in CATEGORIAS_SOPORTADAS:
+            raise ValueError(f"Categoría '{v}' no soportada. Categorías disponibles: {CATEGORIAS_SOPORTADAS}")
         return v
 
     class Config:
