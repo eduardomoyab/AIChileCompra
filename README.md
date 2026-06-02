@@ -101,13 +101,13 @@ Cataloga un producto de una **solicitud de cotización** (Compra Ágil). Descarg
 | `rut_proveedor` | string | — | RUT del proveedor (ej: `76292976-7`) |
 | `use_diccionarios` | bool | `false` | Normalizar campos con diccionarios usando similitud de embeddings |
 | `llm_provider` | string\|null | `null` | `"openai"`, `"gemini"` o `"deepseek"`. `null` usa `DEFAULT_LLM_PROVIDER` del `.env` |
-| `campos_manuales` | lista\|null | `null` | Campos adicionales a extraer. Acepta strings simples o dicts `{campo, contexto}` (ver abajo) |
+| `campos_manuales` | lista\|null | `null` | Campos adicionales a extraer. Acepta strings simples o dicts `{campo, contexto}` o `{campo, contexto, diccionario}` (ver abajo) |
 | `diccionario_similarity_threshold` | float | `0.85` | Score mínimo de similitud coseno para aceptar un match del diccionario (0–1) |
 | `diccionario_llm_fallback` | bool | `true` | Si no hay match automático, usar LLM para decidir entre top-3 candidatos |
 | `token_bearer` | string\|null | `null` | Token Bearer de Mercado Público. Si se omite, usa el token seteado en `/set-token`; si tampoco hay, usa API pública |
 | `clasificacion_prompt` | string\|null | `null` | Descripción de la categoría para filtrar accesorios. Si se omite, no se filtra |
 
-**Categorías soportadas:** `Computadores`
+**Categorías soportadas:** configurables vía `CATEGORIAS_SOPORTADAS` en el `.env` (por defecto: `Computadores,Medicamentos`)
 
 ---
 
@@ -167,7 +167,7 @@ El formato del código de licitación varía según el tipo: `1234-567-LE24` (li
 | `rut_proveedor` | string | — | RUT del proveedor |
 | `use_diccionarios` | bool | `true` | Normalizar campos con diccionarios |
 | `llm_provider` | string\|null | `null` | `"openai"`, `"gemini"` o `"deepseek"`. `null` usa `DEFAULT_LLM_PROVIDER` del `.env` |
-| `campos_manuales` | lista\|null | `null` | Campos a extraer. Acepta strings simples o dicts `{campo, contexto}` — igual que `/catalogar` |
+| `campos_manuales` | lista\|null | `null` | Campos a extraer. Acepta strings simples o dicts `{campo, contexto}` o `{campo, contexto, diccionario}` — igual que `/catalogar` |
 | `diccionario_similarity_threshold` | float | `0.85` | Score mínimo de similitud coseno para aceptar un match del diccionario (0–1) |
 | `diccionario_llm_fallback` | bool | `true` | Si no hay match automático, usar LLM para decidir entre top-3 candidatos |
 | `clasificacion_prompt` | string\|null | `null` | Descripción de la categoría para filtrar accesorios. Si se omite, no se filtra |
@@ -225,10 +225,10 @@ Usa el mismo LLM, los mismos prompts y los mismos diccionarios de normalización
 | `nombre_producto` | string | **requerido** | Nombre del producto |
 | `descripcion` | string\|null | `null` | Descripción libre del producto |
 | `atributos` | objeto\|null | `null` | Tabla de especificaciones técnicas `{campo: valor}` |
-| `categoria` | string | `"Computadores"` | Solo `"Computadores"` por ahora |
+| `categoria` | string | `"Computadores"` | Categoría del producto. Ver `CATEGORIAS_SOPORTADAS` en `.env` |
 | `use_diccionarios` | bool | `true` | Normalizar con diccionarios técnicos |
 | `llm_provider` | string\|null | `null` | `"openai"`, `"gemini"` o `"deepseek"`. `null` usa `DEFAULT_LLM_PROVIDER` del `.env` |
-| `campos_manuales` | lista\|null | `null` | Campos a extraer. Strings simples o dicts `{campo, contexto}` |
+| `campos_manuales` | lista\|null | `null` | Campos a extraer. Strings simples o dicts `{campo, contexto}` o `{campo, contexto, diccionario}` |
 | `diccionario_similarity_threshold` | float | `0.85` | Score mínimo de similitud |
 | `diccionario_llm_fallback` | bool | `true` | LLM fallback para matches dudosos |
 
@@ -270,9 +270,25 @@ Retorna el token actualmente persistido. Devuelve 404 si no hay ninguno.
 
 ## Campos manuales
 
-`campos_manuales` acepta strings simples o dicts `{ "campo": "...", "contexto": "..." }`. El `contexto` se inyecta en el prompt del agente de ese campo como instrucción adicional, sin reemplazar las instrucciones base.
+`campos_manuales` acepta tres formatos:
 
-Los campos marcados con ★ tienen diccionario de valores canónicos — si `use_diccionarios: true`, el valor extraído se normaliza por similitud de embeddings contra ese diccionario.
+```json
+"campos_manuales": [
+  "Marca",
+  { "campo": "Procesador", "contexto": "Extrae el modelo exacto." },
+  { "campo": "principio_activo_1", "contexto": "...", "diccionario": "principio_activo" }
+]
+```
+
+| Key | Tipo | Descripción |
+|---|---|---|
+| `campo` | string | Nombre del campo a extraer. Aparece tal cual en el resultado |
+| `contexto` | string | Instrucción adicional para el agente de ese campo |
+| `diccionario` | string\|null | **Opcional.** Nombre del diccionario a usar para normalización. Si se omite, el campo no se normaliza. Útil cuando varios campos comparten el mismo diccionario (ej: `principio_activo_1` y `principio_activo_2` usando `principio_activo`) |
+
+El `contexto` se inyecta en el prompt del agente como instrucción adicional, sin reemplazar las instrucciones base.
+
+Los campos con `diccionario` explícito (o cuyo nombre coincide con una entrada en `attribute_dictionary.csv`) se normalizan por similitud de embeddings cuando `use_diccionarios: true`.
 
 ```json
 "campos_manuales": [
@@ -331,7 +347,7 @@ Los campos marcados con ★ tienen diccionario de valores canónicos — si `use
 ]
 ```
 
-**Campos con diccionario de normalización (★):** `Procesador`, `Marca`, `Tipo RAM`, `Tipo Almacenamiento`, `Sistema Operativo`
+**Campos con diccionario de normalización (★):** depende de las entradas en `attribute_dictionary.csv` para cada categoría. Para `Computadores`: `Procesador`, `Marca`, `Tipo RAM`, `Tipo Almacenamiento`, `Sistema Operativo`.
 
 > Si el Procesador tiene match en el diccionario de procesadores, `Nucleos` e `Hilos` se completan automáticamente aunque no estén en `campos_manuales`.
 
@@ -409,7 +425,7 @@ El campo `ROWNUM` siempre está presente en `resultado`. El resto de los atribut
 | `use_diccionarios` default | `false` | `true` | `true` |
 | Adjuntos | Archivos del proveedor (ofertas) | Anexos técnicos y económicos | — (texto en el body) |
 | Pipeline de extracción | LangGraph + agentes | Mismo que Compra Ágil | Mismo que Compra Ágil |
-| `campos_manuales` | strings o `{campo, contexto}` | strings o `{campo, contexto}` | strings o `{campo, contexto}` |
+| `campos_manuales` | strings o `{campo, contexto, diccionario?}` | strings o `{campo, contexto, diccionario?}` | strings o `{campo, contexto, diccionario?}` |
 | `clasificacion_prompt` | ✓ | ✓ | — |
 | `tiempos` en metadata | ✓ | ✓ | ✓ |
 
@@ -435,6 +451,10 @@ DEEPSEEK_MODEL=deepseek-chat
 
 # Seguridad
 API_KEY=cambia-esto
+
+# Categorías soportadas (separadas por coma)
+# Para añadir una nueva categoría, agrégala aquí y asegúrate de tener sus entradas en attribute_dictionary.csv
+CATEGORIAS_SOPORTADAS=Computadores,Medicamentos
 
 # Caché de adjuntos (aplica a /catalogar y /catalogar/licitacion)
 # 0 = sin caché, siempre re-descarga (default)

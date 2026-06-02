@@ -499,6 +499,11 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
 
         # Sub-fases 5b..5d: dentro de aplicar_diccionarios
         tiempos_locales = state.get('tiempos', [])
+        dic_overrides = {
+            cm['campo']: cm['diccionario']
+            for cm in (state.get('campos_manuales_lista') or [])
+            if cm.get('diccionario')
+        }
         resultado = catalogador.aplicar_diccionarios(
             resultado_adjuntos=resultado_previo,
             categoria=state['payload'].get('Categoria', ''),
@@ -506,6 +511,7 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
             nodo_nombre=_NODO,
             similarity_threshold=state.get('diccionario_similarity_threshold', 0.85),
             llm_fallback=state.get('diccionario_llm_fallback', True),
+            dic_overrides=dic_overrides,
         )
         state['tiempos'] = tiempos_locales
 

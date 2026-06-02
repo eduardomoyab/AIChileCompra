@@ -68,6 +68,7 @@ class Normalizador:
         nodo_nombre: str = "nodo_5_rag_diccionarios",
         similarity_threshold: float = 0.85,
         llm_fallback: bool = True,
+        dic_overrides: Dict[str, str] = None,
     ) -> Dict[str, Any]:
         """
         Normaliza campos usando similitud de embeddings por campo + LLM fallback opcional.
@@ -99,6 +100,7 @@ class Normalizador:
         NO_DISP = {"no disponible", "no especificado", ""}
         atributos_en_dict = get_atributos_en_diccionario(categoria)
         resultado_final = dict(resultado_adjuntos)
+        _dic_overrides = dic_overrides or {}
 
         logging.info(
             f"[PASO 2/3] Normalizando con diccionario por campo "
@@ -109,16 +111,21 @@ class Normalizador:
         t0_total = time.time()
         campos_normalizados = 0
 
+        # Campos normales (en el dict de la categoría) + campos con override explícito
         campos_a_normalizar = {
             campo: resultado_final[campo]
             for campo in atributos_en_dict
             if resultado_final.get(campo) and str(resultado_final[campo]).lower().strip() not in NO_DISP
         }
+        for campo, dic_name in _dic_overrides.items():
+            if dic_name in atributos_en_dict and resultado_final.get(campo) and str(resultado_final[campo]).lower().strip() not in NO_DISP:
+                campos_a_normalizar[campo] = resultado_final[campo]
 
         def _worker(campo, valor_actual):
+            dic_name = _dic_overrides.get(campo, campo)
             t0 = time.time()
             valor_norm, score, candidatos = normalizar_con_diccionario(
-                categoria, campo, str(valor_actual), k=3, threshold=similarity_threshold
+                categoria, dic_name, str(valor_actual), k=3, threshold=similarity_threshold
             )
             if score >= similarity_threshold:
                 return campo, valor_norm, [(f"sim_{campo}", f"Similitud automática '{campo}' (score={score:.3f})", time.time() - t0)]

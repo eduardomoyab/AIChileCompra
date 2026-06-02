@@ -148,8 +148,9 @@ class ProductoPayload(BaseModel):
 
 class CampoManualItem(BaseModel):
     """Campo manual con instrucciones opcionales para el agente de extracción"""
-    campo: str = Field(..., description="Nombre del campo a extraer (ej: 'Procesador')")
+    campo: str = Field(..., description="Nombre del campo a extraer (ej: 'principio_activo_1')")
     contexto: str = Field("", description="Instrucciones adicionales para el agente de este campo")
+    diccionario: Optional[str] = Field(None, description="Nombre del diccionario a usar para normalización. Si no se provee, se usa el nombre del campo.")
 
 
 class CatalogarRequest(BaseModel):
