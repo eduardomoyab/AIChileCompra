@@ -1109,7 +1109,8 @@ def should_continue_after_download(state: CatalogacionState) -> str:
     if state.get('adjuntos_descargados'):
         return "procesar_adjuntos"
     else:
-        return "END"
+        # Sin adjuntos: salta directo a rag_adjuntos, que usa la descripción del payload como fallback
+        return "rag_adjuntos"
 
 
 def should_continue_after_processing(state: CatalogacionState) -> str:

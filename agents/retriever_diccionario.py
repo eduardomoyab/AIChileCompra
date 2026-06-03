@@ -39,14 +39,14 @@ def _load_csvs() -> None:
     global _dict_df, _comp_df
     if _dict_df is None:
         if os.path.exists(CSV_DICT_PATH):
-            _dict_df = pd.read_csv(CSV_DICT_PATH)
+            _dict_df = pd.read_csv(CSV_DICT_PATH, encoding="latin1")
             logging.info(f"attribute_dictionary.csv cargado: {len(_dict_df)} filas")
         else:
             logging.warning(f"No se encontró {CSV_DICT_PATH}")
             _dict_df = pd.DataFrame(columns=["categoria", "atributo", "valor", "fuente"])
     if _comp_df is None:
         if os.path.exists(CSV_COMP_PATH):
-            _comp_df = pd.read_csv(CSV_COMP_PATH)
+            _comp_df = pd.read_csv(CSV_COMP_PATH, encoding="latin1")
             logging.info(f"attribute_complement.csv cargado: {len(_comp_df)} filas")
         else:
             logging.warning(f"No se encontró {CSV_COMP_PATH}")

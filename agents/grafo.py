@@ -119,13 +119,13 @@ def create_catalogacion_graph():
         }
     )
 
-    # Edge 1: descargar_adjuntos -> procesar_adjuntos (condicional)
+    # Edge 1: descargar_adjuntos -> procesar_adjuntos (condicional) o rag_adjuntos si falló la descarga
     workflow.add_conditional_edges(
         "descargar_adjuntos",
         should_continue_after_download,
         {
             "procesar_adjuntos": "procesar_adjuntos",
-            "END": END
+            "rag_adjuntos": "rag_adjuntos",
         }
     )
 
