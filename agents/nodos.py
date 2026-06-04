@@ -1175,8 +1175,9 @@ def should_extract_campos_manuales(state: CatalogacionState) -> str:
         logging.info("Tipo de producto es 'Otro' - saltando extracción de campos manuales y RAG diccionarios")
         return "consolidar_resultado"
 
-    # Si hay campos manuales y se procesaron adjuntos, ejecutar extracción paralela
-    if campos_manuales and len(campos_manuales) > 0 and state.get('adjuntos_procesados'):
+    # Si hay campos manuales y hay contexto disponible (adjuntos procesados o vectorstore de fallback)
+    has_context = state.get('adjuntos_procesados') or state.get('adjuntos_vectorstore') is not None
+    if campos_manuales and len(campos_manuales) > 0 and has_context:
         return "campos_manuales"
     else:
         # Si NO hay campos manuales, ir directo a consolidar (sin diccionarios)

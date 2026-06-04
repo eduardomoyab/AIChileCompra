@@ -8,6 +8,7 @@ en licitaciones públicas usando LLM, RAG y LangGraph.
 import os
 import sys
 import json
+import time
 import logging
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
@@ -34,17 +35,73 @@ set_langsmith()
 # Cargar variables de entorno
 load_dotenv()
 
-# Token persistido en disco — compartido entre todos los workers de Gunicorn
-_TOKEN_FILE = os.path.join(os.getenv("ATTACHMENTS_OUTPUT_PATH", "attachments"), ".token_store.json")
+# Token persistido: PostgreSQL si DATABASE_URL está configurado, archivo como fallback local
+_token_dir = os.getenv("TOKEN_STORE_PATH") or os.getenv("ATTACHMENTS_OUTPUT_PATH", "attachments")
+_TOKEN_FILE = os.path.join(_token_dir, ".token_store.json")
+_DB_URL = os.getenv("DATABASE_URL", "")
+
+_TOKEN_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS token_store (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    access_token TEXT NOT NULL,
+    obtained_at TEXT,
+    updated_at TIMESTAMP DEFAULT NOW()
+)
+"""
+
+# Cache en memoria: evita ir a la DB en cada request
+_token_cache: dict = {}
+_token_cache_ts: float = 0.0
+_TOKEN_CACHE_TTL = int(os.getenv("TOKEN_CACHE_TTL_SECONDS", "300"))  # 5 min por defecto
 
 def _read_token() -> dict:
+    global _token_cache, _token_cache_ts
+    if time.time() - _token_cache_ts < _TOKEN_CACHE_TTL and _token_cache:
+        return _token_cache
+    if _DB_URL:
+        try:
+            from sqlalchemy import create_engine, text
+            engine = create_engine(_DB_URL)
+            with engine.connect() as conn:
+                conn.execute(text(_TOKEN_TABLE_DDL))
+                row = conn.execute(text("SELECT access_token, obtained_at FROM token_store WHERE id = 1")).fetchone()
+            if row:
+                _token_cache = {"access_token": row[0], "obtained_at": row[1]}
+                _token_cache_ts = time.time()
+                return _token_cache
+            return {}
+        except Exception as e:
+            logging.warning(f"[token] Error leyendo de DB: {e} — usando archivo")
     try:
         with open(_TOKEN_FILE, "r") as f:
-            return json.load(f)
+            _token_cache = json.load(f)
+            _token_cache_ts = time.time()
+            return _token_cache
     except Exception:
         return {}
 
 def _write_token(data: dict):
+    global _token_cache, _token_cache_ts
+    _token_cache = data
+    _token_cache_ts = time.time()
+    if _DB_URL:
+        try:
+            from sqlalchemy import create_engine, text
+            engine = create_engine(_DB_URL)
+            with engine.begin() as conn:
+                conn.execute(text(_TOKEN_TABLE_DDL))
+                conn.execute(text("""
+                    INSERT INTO token_store (id, access_token, obtained_at, updated_at)
+                    VALUES (1, :token, :obtained_at, NOW())
+                    ON CONFLICT (id) DO UPDATE
+                    SET access_token = EXCLUDED.access_token,
+                        obtained_at  = EXCLUDED.obtained_at,
+                        updated_at   = NOW()
+                """), {"token": data.get("access_token", ""), "obtained_at": data.get("obtained_at")})
+            logging.info("[token] Token guardado en DB")
+            return
+        except Exception as e:
+            logging.warning(f"[token] Error escribiendo en DB: {e} — usando archivo")
     os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
     with open(_TOKEN_FILE, "w") as f:
         json.dump(data, f)
@@ -370,7 +427,10 @@ async def catalogar_producto(request: CatalogarRequest,
             if isinstance(item, str):
                 campos_manuales_norm.append({"campo": item, "contexto": ""})
             else:
-                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+                d = {"campo": item.campo, "contexto": item.contexto}
+                if item.diccionario:
+                    d["diccionario"] = item.diccionario
+                campos_manuales_norm.append(d)
 
         # Ejecutar catalogación
         resultado_completo = extraer_atributos(
@@ -455,7 +515,10 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
             if isinstance(item, str):
                 campos_manuales_norm.append({"campo": item, "contexto": ""})
             else:
-                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+                d = {"campo": item.campo, "contexto": item.contexto}
+                if item.diccionario:
+                    d["diccionario"] = item.diccionario
+                campos_manuales_norm.append(d)
 
         # Ejecutar catalogación de licitación
         resultado_completo = extraer_atributos_licitacion(
@@ -531,7 +594,10 @@ async def catalogar_texto(request: CatalogarTextoRequest,
             if isinstance(item, str):
                 campos_manuales_norm.append({"campo": item, "contexto": ""})
             else:
-                campos_manuales_norm.append({"campo": item.campo, "contexto": item.contexto})
+                d = {"campo": item.campo, "contexto": item.contexto}
+                if item.diccionario:
+                    d["diccionario"] = item.diccionario
+                campos_manuales_norm.append(d)
 
         resultado_completo = ejecutar_catalogacion_texto(
             nombre_producto=request.nombre_producto,

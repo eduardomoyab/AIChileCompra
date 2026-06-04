@@ -35,18 +35,34 @@ _dict_df: Optional[pd.DataFrame] = None      # attribute_dictionary.csv en memor
 _comp_df: Optional[pd.DataFrame] = None      # attribute_complement.csv en memoria
 
 
+def _read_csv_safe(path: str, fallback_columns: list) -> pd.DataFrame:
+    """Lee un CSV probando UTF-8, luego latin1. Nunca lanza excepción de encoding."""
+    for enc in ("utf-8-sig", "utf-8", "latin1"):
+        try:
+            df = pd.read_csv(path, encoding=enc)
+            logging.debug(f"CSV cargado con encoding={enc}: {path}")
+            return df
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            logging.warning(f"Error leyendo {path} con encoding={enc}: {e}")
+            break
+    logging.warning(f"No se pudo leer {path} con ningún encoding — devolviendo DataFrame vacío")
+    return pd.DataFrame(columns=fallback_columns)
+
+
 def _load_csvs() -> None:
     global _dict_df, _comp_df
     if _dict_df is None:
         if os.path.exists(CSV_DICT_PATH):
-            _dict_df = pd.read_csv(CSV_DICT_PATH, encoding="latin1")
+            _dict_df = _read_csv_safe(CSV_DICT_PATH, ["categoria", "atributo", "valor", "fuente"])
             logging.info(f"attribute_dictionary.csv cargado: {len(_dict_df)} filas")
         else:
             logging.warning(f"No se encontró {CSV_DICT_PATH}")
             _dict_df = pd.DataFrame(columns=["categoria", "atributo", "valor", "fuente"])
     if _comp_df is None:
         if os.path.exists(CSV_COMP_PATH):
-            _comp_df = pd.read_csv(CSV_COMP_PATH, encoding="latin1")
+            _comp_df = _read_csv_safe(CSV_COMP_PATH, ["categoria", "atributo", "valor", "atributo_complementario", "complemento"])
             logging.info(f"attribute_complement.csv cargado: {len(_comp_df)} filas")
         else:
             logging.warning(f"No se encontró {CSV_COMP_PATH}")
