@@ -93,7 +93,7 @@ class BuscadorAttachmentDownloader:
     # Flujo principal
     # ------------------------------------------------------------------
 
-    def _get_winner_cotizacion_id(self, codigo_cotizacion: str) -> Optional[int]:
+    def _get_winner_cotizacion_id(self, codigo_cotizacion: str, rut_proveedor: str = None) -> Optional[int]:
         """
         Consulta la ficha de la cotización en el Buscador y retorna el
         id_cotizacion del proveedor seleccionado (ganador).
@@ -103,12 +103,37 @@ class BuscadorAttachmentDownloader:
         ficha = resp.json().get("payload") or {}
 
         proveedores = ficha.get("proveedores_cotizando", [])
+        if not proveedores:
+            logging.warning(f"No hay proveedores en la ficha de {codigo_cotizacion}")
+            return None
+
+        # 1. Buscar por proveedor_seleccionado (acepta 1, True, "1")
         ganador = next(
-            (p for p in proveedores if p.get("proveedor_seleccionado") == 1),
+            (p for p in proveedores if p.get("proveedor_seleccionado") in (1, True, "1")),
             None
         )
+
+        # 2. Fallback: buscar por rut_proveedor
+        if ganador is None and rut_proveedor:
+            rut_normalizado = rut_proveedor.replace(".", "").replace("-", "").lower()
+            ganador = next(
+                (p for p in proveedores
+                 if str(p.get("rut_proveedor", "")).replace(".", "").replace("-", "").lower() == rut_normalizado),
+                None
+            )
+            if ganador:
+                logging.info(f"Proveedor encontrado por RUT: {rut_proveedor}")
+
+        # 3. Último recurso: primer proveedor si solo hay uno
+        if ganador is None and len(proveedores) == 1:
+            ganador = proveedores[0]
+            logging.info(f"Un solo proveedor en la ficha — usando directamente")
+
         if ganador is None:
-            logging.warning(f"No se encontró proveedor ganador para {codigo_cotizacion}")
+            logging.warning(
+                f"No se encontró proveedor ganador para {codigo_cotizacion}. "
+                f"Proveedores: {[p.get('rut_proveedor') for p in proveedores]}"
+            )
             return None
 
         logging.info(
@@ -148,7 +173,7 @@ class BuscadorAttachmentDownloader:
 
         try:
             # Paso 1: identificar id_cotizacion del proveedor ganador
-            id_cot = self._get_winner_cotizacion_id(codigo_cotizacion)
+            id_cot = self._get_winner_cotizacion_id(codigo_cotizacion, rut_proveedor)
             if id_cot is None:
                 return {
                     "success": False,

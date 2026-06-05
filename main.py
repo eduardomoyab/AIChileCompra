@@ -28,8 +28,6 @@ from extraer_atributos_licitaciones import extraer_atributos_licitacion
 from agents.grafo import ejecutar_catalogacion_texto
 from utils.langsmith_utils import set_langsmith
 
-from token_utils.utils import TokenPayload
-
 set_langsmith()
 
 # Cargar variables de entorno
@@ -54,9 +52,9 @@ _token_cache: dict = {}
 _token_cache_ts: float = 0.0
 _TOKEN_CACHE_TTL = int(os.getenv("TOKEN_CACHE_TTL_SECONDS", "300"))  # 5 min por defecto
 
-def _read_token() -> dict:
+def _read_token(bypass_cache: bool = False) -> dict:
     global _token_cache, _token_cache_ts
-    if time.time() - _token_cache_ts < _TOKEN_CACHE_TTL and _token_cache:
+    if not bypass_cache and time.time() - _token_cache_ts < _TOKEN_CACHE_TTL and _token_cache:
         return _token_cache
     if _DB_URL:
         try:
@@ -80,31 +78,6 @@ def _read_token() -> dict:
     except Exception:
         return {}
 
-def _write_token(data: dict):
-    global _token_cache, _token_cache_ts
-    _token_cache = data
-    _token_cache_ts = time.time()
-    if _DB_URL:
-        try:
-            from sqlalchemy import create_engine, text
-            engine = create_engine(_DB_URL)
-            with engine.begin() as conn:
-                conn.execute(text(_TOKEN_TABLE_DDL))
-                conn.execute(text("""
-                    INSERT INTO token_store (id, access_token, obtained_at, updated_at)
-                    VALUES (1, :token, :obtained_at, NOW())
-                    ON CONFLICT (id) DO UPDATE
-                    SET access_token = EXCLUDED.access_token,
-                        obtained_at  = EXCLUDED.obtained_at,
-                        updated_at   = NOW()
-                """), {"token": data.get("access_token", ""), "obtained_at": data.get("obtained_at")})
-            logging.info("[token] Token guardado en DB")
-            return
-        except Exception as e:
-            logging.warning(f"[token] Error escribiendo en DB: {e} — usando archivo")
-    os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
-    with open(_TOKEN_FILE, "w") as f:
-        json.dump(data, f)
 
 #set_langsmith()
 # Configuración de logging
@@ -416,7 +389,7 @@ async def catalogar_producto(request: CatalogarRequest,
         if token:
             from utils.get_attachments import TokenAttachmentDownloader
             downloader = TokenAttachmentDownloader(token)
-            fuente = "payload" if request.token_bearer else "set-token"
+            fuente = "payload" if request.token_bearer else "db"
             logging.info(f"Usando TokenAttachmentDownloader (token desde {fuente})")
         else:
             logging.info("Usando BuscadorAttachmentDownloader (API pública)")
@@ -641,14 +614,9 @@ async def catalogar_texto(request: CatalogarTextoRequest,
         )
 
 
-@app.post("/set-token")
-async def set_token(payload: TokenPayload, api_key: str = Depends(require_api_key)):
-    _write_token(payload.model_dump())
-    return {"status": "ok"}
-
 @app.get("/get-token")
 async def get_token(api_key: str = Depends(require_api_key)):
-    data = _read_token()
+    data = _read_token(bypass_cache=True)
     if not data:
         raise HTTPException(status_code=404, detail="Token no disponible")
     return data

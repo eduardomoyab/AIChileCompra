@@ -75,6 +75,7 @@ class CatalogacionState(TypedDict, total=False):
     vector_store_created: bool
 
     # ========== INTERMEDIATE RESULTS ==========
+    adjuntos_vectorstore: Optional[Any]
     resultado_adjuntos: Optional[Dict[str, Any]]
     resultado_diccionarios: Optional[Dict[str, Any]]
     resultado_campos_manuales: Optional[Dict[str, Any]]  # Resultado de extracción paralela de campos manuales

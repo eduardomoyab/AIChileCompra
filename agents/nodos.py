@@ -902,31 +902,32 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
 
         else:
             # --- MODO ADJUNTOS: flujo original con FAISS ---
-            processed_path = state.get('processed_path')
-            if not processed_path or not os.path.exists(processed_path):
-                error_msg = "No se encontró el directorio de archivos procesados"
-                state = add_error(state, error_msg)
-                logging.error(error_msg)
-                return state
-
-            txt_files = [
-                os.path.join(processed_path, f)
-                for f in os.listdir(processed_path)
-                if f.endswith('.txt') and f != 'skipped_files.txt'
-            ]
-
-            if not txt_files:
-                error_msg = f"No se encontraron archivos procesados en {processed_path}"
-                state = add_error(state, error_msg)
-                logging.error(error_msg)
-                return state
-
-            # Sub-fase 4a: reutilizar FAISS de nodo_3 si está disponible
             t0 = time.time()
             vectorstore = state.get('adjuntos_vectorstore')
+
             if vectorstore is not None:
-                logging.info(f"✓ Reutilizando FAISS compartido de nodo_3")
+                logging.info(f"✓ Reutilizando FAISS compartido de nodo_3 (fallback o adjuntos)")
             else:
+                # Sin vectorstore precargado: construir desde archivos procesados
+                processed_path = state.get('processed_path')
+                if not processed_path or not os.path.exists(processed_path):
+                    error_msg = "No se encontró el directorio de archivos procesados"
+                    state = add_error(state, error_msg)
+                    logging.error(error_msg)
+                    return state
+
+                txt_files = [
+                    os.path.join(processed_path, f)
+                    for f in os.listdir(processed_path)
+                    if f.endswith('.txt') and f != 'skipped_files.txt'
+                ]
+
+                if not txt_files:
+                    error_msg = f"No se encontraron archivos procesados en {processed_path}"
+                    state = add_error(state, error_msg)
+                    logging.error(error_msg)
+                    return state
+
                 metadatas = [
                     {
                         "codigo_cotizacion": state['codigo_cotizacion'],
@@ -1175,8 +1176,10 @@ def should_extract_campos_manuales(state: CatalogacionState) -> str:
         logging.info("Tipo de producto es 'Otro' - saltando extracción de campos manuales y RAG diccionarios")
         return "consolidar_resultado"
 
-    # Si hay campos manuales y hay contexto disponible (adjuntos procesados o vectorstore de fallback)
-    has_context = state.get('adjuntos_procesados') or state.get('adjuntos_vectorstore') is not None
+    # Si hay campos manuales y hay contexto disponible (adjuntos procesados, vectorstore, o descripción del payload)
+    has_context = (state.get('adjuntos_procesados')
+                   or state.get('adjuntos_vectorstore') is not None
+                   or state.get('resultado_adjuntos') is not None)
     if campos_manuales and len(campos_manuales) > 0 and has_context:
         return "campos_manuales"
     else:

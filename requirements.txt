@@ -46,6 +46,10 @@ pymupdf==1.25.3
 easyocr>=1.7.0
 Pillow>=10.0.0
 
+# Database
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+
 # HTTP client
 requests==2.32.5
 
