@@ -175,6 +175,19 @@ def create_catalogacion_graph():
     return graph
 
 
+# Grafo compilado una sola vez al importar el módulo — se reutiliza en todos los requests
+_GRAPH: object = None
+_GRAPH_LOCK = __import__("threading").Lock()
+
+def _get_graph():
+    global _GRAPH
+    if _GRAPH is None:
+        with _GRAPH_LOCK:
+            if _GRAPH is None:
+                _GRAPH = create_catalogacion_graph()
+    return _GRAPH
+
+
 # ========== FUNCIÓN HELPER PARA EJECUTAR EL GRAFO ==========
 
 def ejecutar_catalogacion(
@@ -239,8 +252,8 @@ def ejecutar_catalogacion(
     if downloader is not None:
         initial_state['downloader'] = downloader
 
-    # Crear y ejecutar grafo
-    graph = create_catalogacion_graph()
+    # Reutilizar grafo compilado (singleton)
+    graph = _get_graph()
 
     logging.info(f"\n{'='*60}")
     logging.info(f"INICIANDO CATALOGACIÓN")
@@ -296,6 +309,19 @@ def create_catalogacion_texto_graph():
     graph = workflow.compile()
     logging.info("✓ Grafo texto compilado exitosamente")
     return graph
+
+
+# Singleton para el grafo de texto
+_GRAPH_TEXTO: object = None
+_GRAPH_TEXTO_LOCK = __import__("threading").Lock()
+
+def _get_graph_texto():
+    global _GRAPH_TEXTO
+    if _GRAPH_TEXTO is None:
+        with _GRAPH_TEXTO_LOCK:
+            if _GRAPH_TEXTO is None:
+                _GRAPH_TEXTO = create_catalogacion_texto_graph()
+    return _GRAPH_TEXTO
 
 
 def ejecutar_catalogacion_texto(
@@ -380,7 +406,7 @@ def ejecutar_catalogacion_texto(
         adjuntos_vectorstore=None,
     )
 
-    graph = create_catalogacion_texto_graph()
+    graph = _get_graph_texto()
 
     logging.info(f"\n{'='*60}")
     logging.info(f"INICIANDO CATALOGACIÓN DESDE TEXTO")

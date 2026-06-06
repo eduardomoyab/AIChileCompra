@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, validator
+from starlette.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 
 # Añadir el directorio actual al path
@@ -26,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from extraer_atributos import extraer_atributos, extraer_atributos_lote, validar_payload
 from extraer_atributos_licitaciones import extraer_atributos_licitacion
 from agents.grafo import ejecutar_catalogacion_texto
+from utils.get_attachments import TokenAttachmentDownloader
 from utils.langsmith_utils import set_langsmith
 
 set_langsmith()
@@ -387,7 +389,6 @@ async def catalogar_producto(request: CatalogarRequest,
         token = request.token_bearer or _read_token().get("access_token")
         downloader = None
         if token:
-            from utils.get_attachments import TokenAttachmentDownloader
             downloader = TokenAttachmentDownloader(token)
             fuente = "payload" if request.token_bearer else "db"
             logging.info(f"Usando TokenAttachmentDownloader (token desde {fuente})")
@@ -405,8 +406,9 @@ async def catalogar_producto(request: CatalogarRequest,
                     d["diccionario"] = item.diccionario
                 campos_manuales_norm.append(d)
 
-        # Ejecutar catalogación
-        resultado_completo = extraer_atributos(
+        # Ejecutar catalogación en thread pool para no bloquear el event loop
+        resultado_completo = await run_in_threadpool(
+            extraer_atributos,
             payload=request.payload.dict(),
             codigo_cotizacion=request.codigo_cotizacion,
             rut_proveedor=request.rut_proveedor,
@@ -493,8 +495,9 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
                     d["diccionario"] = item.diccionario
                 campos_manuales_norm.append(d)
 
-        # Ejecutar catalogación de licitación
-        resultado_completo = extraer_atributos_licitacion(
+        # Ejecutar catalogación de licitación en thread pool para no bloquear el event loop
+        resultado_completo = await run_in_threadpool(
+            extraer_atributos_licitacion,
             payload=request.payload.dict(),
             codigo_licitacion=request.codigo_licitacion,
             rut_proveedor=request.rut_proveedor,
@@ -572,7 +575,8 @@ async def catalogar_texto(request: CatalogarTextoRequest,
                     d["diccionario"] = item.diccionario
                 campos_manuales_norm.append(d)
 
-        resultado_completo = ejecutar_catalogacion_texto(
+        resultado_completo = await run_in_threadpool(
+            ejecutar_catalogacion_texto,
             nombre_producto=request.nombre_producto,
             descripcion=request.descripcion,
             atributos=request.atributos,
