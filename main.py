@@ -365,8 +365,12 @@ async def health_check():
 # ── Helper: ejecuta fn(**kwargs) en el thread actual, reseteando y capturando tokens ──
 def _run_con_tokens(fn, **kwargs):
     reset_token_counter()
-    resultado = fn(**kwargs)
-    return resultado, get_token_counter()
+    resultado, exc = None, None
+    try:
+        resultado = fn(**kwargs)
+    except Exception as e:
+        exc = e
+    return resultado, get_token_counter(), exc
 
 
 @app.post("/catalogar", response_model=CatalogarResponse)
@@ -417,7 +421,7 @@ async def catalogar_producto(request: CatalogarRequest,
                 campos_manuales_norm.append(d)
 
         # Ejecutar catalogación en thread pool para no bloquear el event loop
-        resultado_completo, tokens = await run_in_threadpool(
+        resultado_completo, tokens, exc = await run_in_threadpool(
             _run_con_tokens,
             extraer_atributos,
             payload=request.payload.dict(),
@@ -431,6 +435,28 @@ async def catalogar_producto(request: CatalogarRequest,
             diccionario_llm_fallback=request.diccionario_llm_fallback,
             clasificacion_prompt=request.clasificacion_prompt,
         )
+
+        resultado_completo = resultado_completo or {}
+        await run_in_threadpool(registrar_auditoria, _DB_URL, {
+            "endpoint": "/catalogar",
+            "categoria": request.payload.Categoria,
+            "codigo_cotizacion": request.codigo_cotizacion,
+            "rut_proveedor": request.rut_proveedor,
+            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+            "con_adjuntos": resultado_completo.get("adjuntos_descargados", False),
+            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
+            "tokens_llm_input": tokens["input"],
+            "tokens_llm_output": tokens["output"],
+            "tokens_llm_total": tokens["input"] + tokens["output"],
+            "tokens_embedding_chars": tokens["embedding_chars"],
+            "duracion_segundos": round(time.time() - t_inicio, 3),
+            "success": exc is None and resultado_completo.get("resultado_final") is not None,
+            "num_errores": len(resultado_completo.get("errores", [])),
+            "num_warnings": len(resultado_completo.get("warnings", [])),
+        })
+
+        if exc is not None:
+            raise exc
 
         # Preparar response
         response = CatalogarResponse(
@@ -451,25 +477,6 @@ async def catalogar_producto(request: CatalogarRequest,
         )
 
         logging.info(f"Catalogación completada - Cotización: {request.codigo_cotizacion}, Success: {response.success}")
-
-        await run_in_threadpool(registrar_auditoria, _DB_URL, {
-            "endpoint": "/catalogar",
-            "categoria": request.payload.Categoria,
-            "codigo_cotizacion": request.codigo_cotizacion,
-            "rut_proveedor": request.rut_proveedor,
-            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
-            "con_adjuntos": resultado_completo.get("adjuntos_descargados", False),
-            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
-            "tokens_llm_input": tokens["input"],
-            "tokens_llm_output": tokens["output"],
-            "tokens_llm_total": tokens["input"] + tokens["output"],
-            "tokens_embedding_chars": tokens["embedding_chars"],
-            "duracion_segundos": round(time.time() - t_inicio, 3),
-            "success": response.success,
-            "num_errores": len(response.errores),
-            "num_warnings": len(response.warnings),
-        })
-
         return response
 
     except ValueError as e:
@@ -526,7 +533,7 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
                 campos_manuales_norm.append(d)
 
         # Ejecutar catalogación de licitación en thread pool para no bloquear el event loop
-        resultado_completo, tokens = await run_in_threadpool(
+        resultado_completo, tokens, exc = await run_in_threadpool(
             _run_con_tokens,
             extraer_atributos_licitacion,
             payload=request.payload.dict(),
@@ -539,6 +546,28 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
             diccionario_llm_fallback=request.diccionario_llm_fallback,
             clasificacion_prompt=request.clasificacion_prompt,
         )
+
+        resultado_completo = resultado_completo or {}
+        await run_in_threadpool(registrar_auditoria, _DB_URL, {
+            "endpoint": "/catalogar/licitacion",
+            "categoria": request.payload.Categoria,
+            "codigo_cotizacion": request.codigo_licitacion,
+            "rut_proveedor": request.rut_proveedor,
+            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+            "con_adjuntos": resultado_completo.get("adjuntos_descargados", False),
+            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
+            "tokens_llm_input": tokens["input"],
+            "tokens_llm_output": tokens["output"],
+            "tokens_llm_total": tokens["input"] + tokens["output"],
+            "tokens_embedding_chars": tokens["embedding_chars"],
+            "duracion_segundos": round(time.time() - t_inicio, 3),
+            "success": exc is None and resultado_completo.get("resultado_final") is not None,
+            "num_errores": len(resultado_completo.get("errores", [])),
+            "num_warnings": len(resultado_completo.get("warnings", [])),
+        })
+
+        if exc is not None:
+            raise exc
 
         # Preparar response
         response = CatalogarResponse(
@@ -560,25 +589,6 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
         )
 
         logging.info(f"Catalogación licitación completada - Código: {request.codigo_licitacion}, Success: {response.success}")
-
-        await run_in_threadpool(registrar_auditoria, _DB_URL, {
-            "endpoint": "/catalogar/licitacion",
-            "categoria": request.payload.Categoria,
-            "codigo_cotizacion": request.codigo_licitacion,
-            "rut_proveedor": request.rut_proveedor,
-            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
-            "con_adjuntos": resultado_completo.get("adjuntos_descargados", False),
-            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
-            "tokens_llm_input": tokens["input"],
-            "tokens_llm_output": tokens["output"],
-            "tokens_llm_total": tokens["input"] + tokens["output"],
-            "tokens_embedding_chars": tokens["embedding_chars"],
-            "duracion_segundos": round(time.time() - t_inicio, 3),
-            "success": response.success,
-            "num_errores": len(response.errores),
-            "num_warnings": len(response.warnings),
-        })
-
         return response
 
     except ValueError as e:
@@ -625,7 +635,7 @@ async def catalogar_texto(request: CatalogarTextoRequest,
                     d["diccionario"] = item.diccionario
                 campos_manuales_norm.append(d)
 
-        resultado_completo, tokens = await run_in_threadpool(
+        resultado_completo, tokens, exc = await run_in_threadpool(
             _run_con_tokens,
             ejecutar_catalogacion_texto,
             nombre_producto=request.nombre_producto,
@@ -638,6 +648,28 @@ async def catalogar_texto(request: CatalogarTextoRequest,
             diccionario_similarity_threshold=request.diccionario_similarity_threshold,
             diccionario_llm_fallback=request.diccionario_llm_fallback,
         )
+
+        resultado_completo = resultado_completo or {}
+        await run_in_threadpool(registrar_auditoria, _DB_URL, {
+            "endpoint": "/catalogar/texto",
+            "categoria": request.categoria,
+            "codigo_cotizacion": None,
+            "rut_proveedor": None,
+            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+            "con_adjuntos": False,
+            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
+            "tokens_llm_input": tokens["input"],
+            "tokens_llm_output": tokens["output"],
+            "tokens_llm_total": tokens["input"] + tokens["output"],
+            "tokens_embedding_chars": tokens["embedding_chars"],
+            "duracion_segundos": round(time.time() - t_inicio, 3),
+            "success": exc is None and resultado_completo.get("resultado_final") is not None,
+            "num_errores": len(resultado_completo.get("errores", [])),
+            "num_warnings": len(resultado_completo.get("warnings", [])),
+        })
+
+        if exc is not None:
+            raise exc
 
         response = CatalogarResponse(
             success=resultado_completo.get('resultado_final') is not None,
@@ -655,25 +687,6 @@ async def catalogar_texto(request: CatalogarTextoRequest,
         )
 
         logging.info(f"Catalogación texto completada — success: {response.success}")
-
-        await run_in_threadpool(registrar_auditoria, _DB_URL, {
-            "endpoint": "/catalogar/texto",
-            "categoria": request.categoria,
-            "codigo_cotizacion": None,
-            "rut_proveedor": None,
-            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
-            "con_adjuntos": False,
-            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
-            "tokens_llm_input": tokens["input"],
-            "tokens_llm_output": tokens["output"],
-            "tokens_llm_total": tokens["input"] + tokens["output"],
-            "tokens_embedding_chars": tokens["embedding_chars"],
-            "duracion_segundos": round(time.time() - t_inicio, 3),
-            "success": response.success,
-            "num_errores": len(response.errores),
-            "num_warnings": len(response.warnings),
-        })
-
         return response
 
     except ValueError as e:
