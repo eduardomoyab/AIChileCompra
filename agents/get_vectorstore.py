@@ -2,6 +2,13 @@ import os
 from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv
 
+def _contar_embedding_chars(documents) -> None:
+    try:
+        from agents.get_agent import add_embedding_chars
+        add_embedding_chars(sum(len(d.page_content) for d in documents))
+    except Exception:
+        pass
+
 # Cargar variables de entorno PRIMERO
 load_dotenv()
 
@@ -98,6 +105,9 @@ def create_faiss_from_files(
         documents = text_splitter.split_documents(documents)
         print(f"Documentos divididos en {len(documents)} chunks de ~{chunk_size} caracteres")
 
+    # Registrar chars enviados al modelo de embeddings
+    _contar_embedding_chars(documents)
+
     # Crear FAISS en memoria
     vectorstore = FAISS.from_documents(documents, embeddings)
 
@@ -129,6 +139,9 @@ def create_faiss_from_texts(
         metadata = metadatas[i] if metadatas and i < len(metadatas) else {}
         doc = Document(page_content=text, metadata=metadata)
         documents.append(doc)
+
+    # Registrar chars enviados al modelo de embeddings
+    _contar_embedding_chars(documents)
 
     # Crear FAISS en memoria
     vectorstore = FAISS.from_documents(documents, embeddings)

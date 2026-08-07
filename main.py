@@ -28,6 +28,8 @@ from extraer_atributos import extraer_atributos, extraer_atributos_lote, validar
 from extraer_atributos_licitaciones import extraer_atributos_licitacion
 from agents.grafo import ejecutar_catalogacion_texto
 from utils.get_attachments import TokenAttachmentDownloader
+from utils.audit import crear_tabla_auditoria, registrar_auditoria, contar_atributos_extraidos
+from agents.get_agent import reset_token_counter, get_token_counter
 from utils.langsmith_utils import set_langsmith
 
 set_langsmith()
@@ -360,6 +362,13 @@ async def health_check():
     )
 
 
+# ── Helper: ejecuta fn(**kwargs) en el thread actual, reseteando y capturando tokens ──
+def _run_con_tokens(fn, **kwargs):
+    reset_token_counter()
+    resultado = fn(**kwargs)
+    return resultado, get_token_counter()
+
+
 @app.post("/catalogar", response_model=CatalogarResponse)
 async def catalogar_producto(request: CatalogarRequest,
                              api_key: str = Depends(require_api_key)):
@@ -384,6 +393,7 @@ async def catalogar_producto(request: CatalogarRequest,
     """
     try:
         logging.info(f"Catalogando producto - Cotización: {request.codigo_cotizacion}, Proveedor: {request.rut_proveedor}")
+        t_inicio = time.time()
 
         # Seleccionar downloader: payload > token en disco > sin token
         token = request.token_bearer or _read_token().get("access_token")
@@ -407,7 +417,8 @@ async def catalogar_producto(request: CatalogarRequest,
                 campos_manuales_norm.append(d)
 
         # Ejecutar catalogación en thread pool para no bloquear el event loop
-        resultado_completo = await run_in_threadpool(
+        resultado_completo, tokens = await run_in_threadpool(
+            _run_con_tokens,
             extraer_atributos,
             payload=request.payload.dict(),
             codigo_cotizacion=request.codigo_cotizacion,
@@ -440,6 +451,24 @@ async def catalogar_producto(request: CatalogarRequest,
         )
 
         logging.info(f"Catalogación completada - Cotización: {request.codigo_cotizacion}, Success: {response.success}")
+
+        await run_in_threadpool(registrar_auditoria, _DB_URL, {
+            "endpoint": "/catalogar",
+            "categoria": request.payload.Categoria,
+            "codigo_cotizacion": request.codigo_cotizacion,
+            "rut_proveedor": request.rut_proveedor,
+            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+            "con_adjuntos": resultado_completo.get("adjuntos_descargados", False),
+            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
+            "tokens_llm_input": tokens["input"],
+            "tokens_llm_output": tokens["output"],
+            "tokens_llm_total": tokens["input"] + tokens["output"],
+            "tokens_embedding_chars": tokens["embedding_chars"],
+            "duracion_segundos": round(time.time() - t_inicio, 3),
+            "success": response.success,
+            "num_errores": len(response.errores),
+            "num_warnings": len(response.warnings),
+        })
 
         return response
 
@@ -483,6 +512,7 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
     """
     try:
         logging.info(f"Catalogando licitación - Código: {request.codigo_licitacion}, Proveedor: {request.rut_proveedor}")
+        t_inicio = time.time()
 
         # Normalizar campos_manuales: List[str | CampoManualItem] → List[Dict]
         campos_manuales_norm = []
@@ -496,7 +526,8 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
                 campos_manuales_norm.append(d)
 
         # Ejecutar catalogación de licitación en thread pool para no bloquear el event loop
-        resultado_completo = await run_in_threadpool(
+        resultado_completo, tokens = await run_in_threadpool(
+            _run_con_tokens,
             extraer_atributos_licitacion,
             payload=request.payload.dict(),
             codigo_licitacion=request.codigo_licitacion,
@@ -529,6 +560,24 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
         )
 
         logging.info(f"Catalogación licitación completada - Código: {request.codigo_licitacion}, Success: {response.success}")
+
+        await run_in_threadpool(registrar_auditoria, _DB_URL, {
+            "endpoint": "/catalogar/licitacion",
+            "categoria": request.payload.Categoria,
+            "codigo_cotizacion": request.codigo_licitacion,
+            "rut_proveedor": request.rut_proveedor,
+            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+            "con_adjuntos": resultado_completo.get("adjuntos_descargados", False),
+            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
+            "tokens_llm_input": tokens["input"],
+            "tokens_llm_output": tokens["output"],
+            "tokens_llm_total": tokens["input"] + tokens["output"],
+            "tokens_embedding_chars": tokens["embedding_chars"],
+            "duracion_segundos": round(time.time() - t_inicio, 3),
+            "success": response.success,
+            "num_errores": len(response.errores),
+            "num_warnings": len(response.warnings),
+        })
 
         return response
 
@@ -563,6 +612,7 @@ async def catalogar_texto(request: CatalogarTextoRequest,
     """
     try:
         logging.info(f"Catalogando desde texto — producto: {request.nombre_producto[:60]}")
+        t_inicio = time.time()
 
         # Normalizar campos_manuales: List[str | CampoManualItem] → List[Dict]
         campos_manuales_norm = []
@@ -575,7 +625,8 @@ async def catalogar_texto(request: CatalogarTextoRequest,
                     d["diccionario"] = item.diccionario
                 campos_manuales_norm.append(d)
 
-        resultado_completo = await run_in_threadpool(
+        resultado_completo, tokens = await run_in_threadpool(
+            _run_con_tokens,
             ejecutar_catalogacion_texto,
             nombre_producto=request.nombre_producto,
             descripcion=request.descripcion,
@@ -604,6 +655,25 @@ async def catalogar_texto(request: CatalogarTextoRequest,
         )
 
         logging.info(f"Catalogación texto completada — success: {response.success}")
+
+        await run_in_threadpool(registrar_auditoria, _DB_URL, {
+            "endpoint": "/catalogar/texto",
+            "categoria": request.categoria,
+            "codigo_cotizacion": None,
+            "rut_proveedor": None,
+            "llm_provider": request.llm_provider or os.getenv("DEFAULT_LLM_PROVIDER", "gemini"),
+            "con_adjuntos": False,
+            "num_atributos_extraidos": contar_atributos_extraidos(resultado_completo.get("resultado_final") or {}),
+            "tokens_llm_input": tokens["input"],
+            "tokens_llm_output": tokens["output"],
+            "tokens_llm_total": tokens["input"] + tokens["output"],
+            "tokens_embedding_chars": tokens["embedding_chars"],
+            "duracion_segundos": round(time.time() - t_inicio, 3),
+            "success": response.success,
+            "num_errores": len(response.errores),
+            "num_warnings": len(response.warnings),
+        })
+
         return response
 
     except ValueError as e:
@@ -697,6 +767,9 @@ async def startup_event():
     logging.info("="*80)
     logging.info(f"LLM Provider por defecto: {os.getenv('DEFAULT_LLM_PROVIDER', 'gemini')}")
     logging.info(f"API Keys configuradas: {len(API_KEYS)} ({'✓' if 'your-secret-api-key-here' not in API_KEYS else '✗'})")
+
+    # Crear tabla de auditoría si no existe
+    crear_tabla_auditoria(_DB_URL)
 
     # Pre-cargar FAISS diccionarios: desde disco si existen, si no construye y persiste
     try:

@@ -5,6 +5,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.callbacks import BaseCallbackHandler
 #from langchain_deepseek import ChatDeepSeek
 # Cargar variables de entorno
 load_dotenv()
@@ -16,6 +17,59 @@ _openai_keys_cycle: Optional[itertools.cycle] = None
 # Cache de instancias LLM por (provider, temperature) para evitar recrear objetos por request
 _llm_cache: dict = {}
 _llm_cache_lock = threading.Lock()
+
+# ── Contador de tokens por thread ──────────────────────────────────────────────
+_thread_tokens = threading.local()
+
+
+def _get_counter() -> dict:
+    if not hasattr(_thread_tokens, "c"):
+        _thread_tokens.c = {"input": 0, "output": 0, "embedding_chars": 0}
+    return _thread_tokens.c
+
+
+def reset_token_counter() -> None:
+    _thread_tokens.c = {"input": 0, "output": 0, "embedding_chars": 0}
+
+
+def get_token_counter() -> dict:
+    return dict(_get_counter())
+
+
+def add_embedding_chars(n: int) -> None:
+    _get_counter()["embedding_chars"] += n
+
+
+class _TokenCallback(BaseCallbackHandler):
+    """Acumula tokens de cada llamada LLM en el contador del thread actual."""
+
+    def on_llm_end(self, response, **kwargs):
+        try:
+            # Intento 1: llm_output estándar de OpenAI
+            if response.llm_output:
+                usage = (
+                    response.llm_output.get("token_usage")
+                    or response.llm_output.get("usage")
+                    or {}
+                )
+                if usage:
+                    c = _get_counter()
+                    c["input"] += usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+                    c["output"] += usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                    return
+            # Intento 2: usage_metadata en AIMessage (Gemini y OpenAI recientes)
+            for gen_list in response.generations:
+                for gen in gen_list:
+                    msg = getattr(gen, "message", None)
+                    if msg and hasattr(msg, "usage_metadata") and msg.usage_metadata:
+                        c = _get_counter()
+                        c["input"] += msg.usage_metadata.get("input_tokens", 0)
+                        c["output"] += msg.usage_metadata.get("output_tokens", 0)
+        except Exception:
+            pass
+
+
+_token_callback = _TokenCallback()
 
 def _get_openai_key_roundrobin() -> str:
     global _openai_keys_cycle
@@ -85,6 +139,9 @@ def get_llm(model_provider: str = "openai", temperature: float = 0.0):
     with _llm_cache_lock:
         if key not in _llm_cache:
             _llm_cache[key] = _build_llm(model_provider, temperature)
-        return _llm_cache[key]
+        base_llm = _llm_cache[key]
+    # with_config es barato: devuelve un RunnableBinding que reutiliza el cliente HTTP
+    # cacheado pero añade el callback de tokens al invoke de este thread
+    return base_llm.with_config(callbacks=[_token_callback])
 
 
