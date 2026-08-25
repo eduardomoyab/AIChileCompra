@@ -868,6 +868,76 @@ async def normalizar(request: NormalizarRequest,
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error interno: {str(e)}")
 
 
+class DiccionarioValorRequest(BaseModel):
+    categoria:     str  = Field(..., description="Categoría del producto (ej: Computadores, Medicamentos)")
+    atributo:      str  = Field(..., description="Nombre del atributo (ej: gpu_dedicada_nombre)")
+    valor:         str  = Field(..., description="Valor canónico a agregar al diccionario")
+    fuente:        str  = Field("usuario", description="Fuente del valor (ej: usuario, manual, proveedor)")
+    forzar:        bool = Field(False, description="Si True, omite la validación LLM e inserta directamente")
+    llm_provider:  Optional[str] = Field(None, description="Proveedor LLM para validación (openai, gemini). None = DEFAULT_LLM_PROVIDER")
+
+
+@app.post("/diccionario/valor")
+async def agregar_valor_diccionario(request: DiccionarioValorRequest,
+                                    api_key: str = Depends(require_api_key)):
+    """
+    Agrega un valor canónico al diccionario online (tabla DB).
+
+    **Por defecto**, el LLM evalúa si el valor es una entrada canónica válida antes de insertarlo.
+    Usa `forzar=true` para saltarse la validación (ej: valores que ya sabes que son correctos).
+
+    El FAISS del par (categoria, atributo) se invalida automáticamente al insertar,
+    por lo que el valor queda disponible en la próxima normalización.
+
+    **Requiere header:** `X-API-Key`
+    """
+    from agents.retriever_diccionario import agregar_valor_db
+    try:
+        insertado, llm_aprobado, razon = await run_in_threadpool(
+            agregar_valor_db,
+            request.categoria, request.atributo, request.valor, request.fuente,
+            request.forzar, request.llm_provider,
+        )
+        if not llm_aprobado:
+            return {
+                "success": False,
+                "insertado": False,
+                "llm_aprobado": False,
+                "razon": razon,
+                "mensaje": f"Valor rechazado por validación LLM: {razon}",
+            }
+        return {
+            "success": True,
+            "insertado": insertado,
+            "llm_aprobado": llm_aprobado,
+            "razon": razon,
+            "mensaje": f"Valor '{request.valor}' {'agregado' if insertado else 'ya existía'} en '{request.categoria}::{request.atributo}'",
+        }
+    except Exception as e:
+        logging.exception(f"Error agregando valor al diccionario: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/diccionario/valores")
+async def listar_valores_diccionario(
+    categoria: Optional[str] = None,
+    atributo:  Optional[str] = None,
+    api_key: str = Depends(require_api_key),
+):
+    """
+    Lista los valores del diccionario online (tabla DB).
+    Filtra por categoria y/o atributo si se pasan como query params.
+
+    **Requiere header:** `X-API-Key`
+    """
+    from agents.retriever_diccionario import listar_valores_db
+    try:
+        valores = await run_in_threadpool(listar_valores_db, categoria, atributo)
+        return {"success": True, "total": len(valores), "valores": valores}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/get-token")
 async def get_token(api_key: str = Depends(require_api_key)):
     data = _read_token(bypass_cache=True)
