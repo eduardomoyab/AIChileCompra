@@ -278,6 +278,56 @@ class CatalogarTextoRequest(BaseModel):
         }
 
 
+class NormalizarCampoItem(BaseModel):
+    campo: str = Field(..., description="Nombre del campo/atributo a normalizar")
+    valor: str = Field(..., description="Valor a normalizar")
+    diccionario: Optional[str] = Field(None, description="Clave del diccionario a usar. Si se provee, es obligatorio para este campo. Si no, se usa el nombre del campo.")
+
+
+class NormalizarRequest(BaseModel):
+    categoria: str = Field(..., description="Categoría del producto (Computadores, Medicamentos, etc.)")
+    campos: List[NormalizarCampoItem] = Field(..., description="Lista de campos con sus valores a normalizar")
+    llm_provider: Optional[str] = Field(None, description="Proveedor LLM para fallback (openai, gemini). None = usa DEFAULT_LLM_PROVIDER")
+    similarity_threshold: float = Field(0.85, description="Score mínimo de similitud para aceptar match automático (0-1)")
+    llm_fallback: bool = Field(True, description="Usar LLM cuando no hay match sobre el threshold")
+
+    @validator('categoria')
+    def validar_categoria(cls, v):
+        if v not in CATEGORIAS_SOPORTADAS:
+            raise ValueError(f"Categoría '{v}' no soportada. Categorías disponibles: {CATEGORIAS_SOPORTADAS}")
+        return v
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "categoria": "Medicamentos",
+                "campos": [
+                    {"campo": "principio_activo_1", "valor": "metamizol sodico", "diccionario": "principio_activo"},
+                    {"campo": "principio_activo_2", "valor": "PARGEVERINA", "diccionario": "principio_activo"},
+                    {"campo": "forma_farmaceutica", "valor": "gotas orales"},
+                    {"campo": "laboratorio", "valor": "bayer sa"}
+                ],
+                "similarity_threshold": 0.85,
+                "llm_fallback": True
+            }
+        }
+
+
+class NormalizarDetalleCampo(BaseModel):
+    campo: str
+    valor_original: str
+    valor_normalizado: str
+    score: float
+    metodo: str  # "similitud", "llm_fallback", "sin_diccionario", "sin_match"
+
+
+class NormalizarResponse(BaseModel):
+    success: bool
+    resultado: Dict[str, str]
+    detalle: List[NormalizarDetalleCampo]
+    warnings: List[str]
+
+
 class CatalogarLoteRequest(BaseModel):
     """Modelo de request para catalogación de múltiples productos"""
 
@@ -437,6 +487,12 @@ async def catalogar_producto(request: CatalogarRequest,
         )
 
         resultado_completo = resultado_completo or {}
+        _detalle_audit = json.dumps({
+            "diagnostico": resultado_completo.get("diagnostico") or {},
+            "tiempos": resultado_completo.get("tiempos") or [],
+            "errores": resultado_completo.get("errores") or [],
+            "warnings": resultado_completo.get("warnings") or [],
+        }, ensure_ascii=False, default=str)
         await run_in_threadpool(registrar_auditoria, _DB_URL, {
             "endpoint": "/catalogar",
             "categoria": request.payload.Categoria,
@@ -453,6 +509,7 @@ async def catalogar_producto(request: CatalogarRequest,
             "success": exc is None and resultado_completo.get("resultado_final") is not None,
             "num_errores": len(resultado_completo.get("errores", [])),
             "num_warnings": len(resultado_completo.get("warnings", [])),
+            "detalle": _detalle_audit,
         })
 
         if exc is not None:
@@ -548,6 +605,12 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
         )
 
         resultado_completo = resultado_completo or {}
+        _detalle_audit = json.dumps({
+            "diagnostico": resultado_completo.get("diagnostico") or {},
+            "tiempos": resultado_completo.get("tiempos") or [],
+            "errores": resultado_completo.get("errores") or [],
+            "warnings": resultado_completo.get("warnings") or [],
+        }, ensure_ascii=False, default=str)
         await run_in_threadpool(registrar_auditoria, _DB_URL, {
             "endpoint": "/catalogar/licitacion",
             "categoria": request.payload.Categoria,
@@ -564,6 +627,7 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
             "success": exc is None and resultado_completo.get("resultado_final") is not None,
             "num_errores": len(resultado_completo.get("errores", [])),
             "num_warnings": len(resultado_completo.get("warnings", [])),
+            "detalle": _detalle_audit,
         })
 
         if exc is not None:
@@ -650,6 +714,12 @@ async def catalogar_texto(request: CatalogarTextoRequest,
         )
 
         resultado_completo = resultado_completo or {}
+        _detalle_audit = json.dumps({
+            "diagnostico": resultado_completo.get("diagnostico") or {},
+            "tiempos": resultado_completo.get("tiempos") or [],
+            "errores": resultado_completo.get("errores") or [],
+            "warnings": resultado_completo.get("warnings") or [],
+        }, ensure_ascii=False, default=str)
         await run_in_threadpool(registrar_auditoria, _DB_URL, {
             "endpoint": "/catalogar/texto",
             "categoria": request.categoria,
@@ -666,6 +736,7 @@ async def catalogar_texto(request: CatalogarTextoRequest,
             "success": exc is None and resultado_completo.get("resultado_final") is not None,
             "num_errores": len(resultado_completo.get("errores", [])),
             "num_warnings": len(resultado_completo.get("warnings", [])),
+            "detalle": _detalle_audit,
         })
 
         if exc is not None:
@@ -699,6 +770,99 @@ async def catalogar_texto(request: CatalogarTextoRequest,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno: {str(e)}"
         )
+
+
+def _normalizar_valor_upper(valor: str) -> str:
+    """Mayúsculas en todo excepto 'No especificado'."""
+    return valor if valor.strip().lower() == "no especificado" else valor.upper()
+
+
+def _ejecutar_normalizacion(request: NormalizarRequest):
+    from agents.retriever_diccionario import normalizar_con_diccionario
+    from agents.normalizador import Normalizador
+
+    normalizador = Normalizador(llm_provider=request.llm_provider)
+    warnings = []
+    detalle = []
+    resultado = {}
+
+    for item in request.campos:
+        dic_key = item.diccionario if item.diccionario else item.campo
+
+        valor_norm, score, candidatos = normalizar_con_diccionario(
+            request.categoria,
+            dic_key,
+            item.valor,
+            k=3,
+            threshold=request.similarity_threshold,
+        )
+
+        if score == 0.0 and not candidatos:
+            # No existe diccionario para este campo
+            metodo = "sin_diccionario"
+            warnings.append(f"'{dic_key}' no tiene diccionario en categoría '{request.categoria}' — valor sin normalizar")
+            valor_final = _normalizar_valor_upper(item.valor)
+
+        elif score >= request.similarity_threshold:
+            metodo = "similitud"
+            valor_final = _normalizar_valor_upper(valor_norm)
+
+        elif request.llm_fallback and candidatos:
+            normalizador._initialize_llms()
+            valor_llm = normalizador._llm_resolver_match(item.campo, item.valor, candidatos)
+            if valor_llm:
+                metodo = "llm_fallback"
+                valor_final = _normalizar_valor_upper(valor_llm)
+                score = next((s for v, s in candidatos if v == valor_llm), score)
+            else:
+                metodo = "sin_match"
+                warnings.append(f"'{item.campo}': sin match en diccionario ni LLM para '{item.valor}'")
+                valor_final = _normalizar_valor_upper(item.valor)
+        else:
+            metodo = "sin_match"
+            warnings.append(f"'{item.campo}': sin match en diccionario para '{item.valor}' (score={score:.2f})")
+            valor_final = _normalizar_valor_upper(item.valor)
+
+        resultado[item.campo] = valor_final
+        detalle.append(NormalizarDetalleCampo(
+            campo=item.campo,
+            valor_original=item.valor,
+            valor_normalizado=valor_final,
+            score=round(score, 4),
+            metodo=metodo,
+        ))
+
+    return resultado, detalle, warnings
+
+
+@app.post("/normalizar", response_model=NormalizarResponse)
+async def normalizar(request: NormalizarRequest,
+                     api_key: str = Depends(require_api_key)):
+    """
+    Normaliza valores contra los diccionarios canónicos.
+
+    Por cada campo:
+    - Si `diccionario` viene en el item → lo usa como clave del diccionario (obligatorio para ese campo)
+    - Si no viene → usa el nombre del `campo` como clave
+    - Si no existe diccionario para esa clave → devuelve el valor original sin normalizar
+
+    Los valores normalizados se devuelven siempre en **mayúsculas**, excepto "No especificado".
+
+    **Requiere header:** `X-API-Key`
+    """
+    try:
+        resultado, detalle, warnings = await run_in_threadpool(_ejecutar_normalizacion, request)
+        return NormalizarResponse(
+            success=True,
+            resultado=resultado,
+            detalle=detalle,
+            warnings=warnings,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logging.exception(f"Error en normalización: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error interno: {str(e)}")
 
 
 @app.get("/get-token")

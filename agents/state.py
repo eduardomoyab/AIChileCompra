@@ -88,6 +88,7 @@ class CatalogacionState(TypedDict, total=False):
     warnings: List[str]
     tiempo_total: Optional[float]
     tiempos: List[Dict[str, Any]]  # Registro de tiempos por fase interna
+    diagnostico: Optional[Dict[str, Any]]  # Detalle estructurado del procesamiento por nodo
 
 
 def create_initial_state(
@@ -155,6 +156,7 @@ def create_initial_state(
         tiempo_total=None,
         tiempos=[],
         adjuntos_vectorstore=None,
+        diagnostico={},
     )
 
 

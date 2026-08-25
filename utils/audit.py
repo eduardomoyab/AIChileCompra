@@ -25,8 +25,22 @@ CREATE TABLE IF NOT EXISTS public.auditoria_requests (
     duracion_segundos       NUMERIC(10,3),
     success                 BOOLEAN,
     num_errores             INTEGER,
-    num_warnings            INTEGER
+    num_warnings            INTEGER,
+    detalle                 JSONB
 )
+"""
+
+_ALTER_DETALLE_DDL = """
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public'
+          AND table_name='auditoria_requests'
+          AND column_name='detalle'
+    ) THEN
+        ALTER TABLE public.auditoria_requests ADD COLUMN detalle JSONB;
+    END IF;
+END $$;
 """
 
 _INSERT_SQL = """
@@ -35,13 +49,13 @@ INSERT INTO public.auditoria_requests (
     con_adjuntos, num_atributos_extraidos,
     tokens_llm_input, tokens_llm_output, tokens_llm_total,
     tokens_embedding_chars, duracion_segundos,
-    success, num_errores, num_warnings
+    success, num_errores, num_warnings, detalle
 ) VALUES (
     :endpoint, :categoria, :codigo_cotizacion, :rut_proveedor, :llm_provider,
     :con_adjuntos, :num_atributos_extraidos,
     :tokens_llm_input, :tokens_llm_output, :tokens_llm_total,
     :tokens_embedding_chars, :duracion_segundos,
-    :success, :num_errores, :num_warnings
+    :success, :num_errores, :num_warnings, :detalle
 )
 """
 
@@ -65,6 +79,7 @@ def crear_tabla_auditoria(db_url: str) -> None:
         engine = _get_engine(db_url)
         with engine.connect() as conn:
             conn.execute(text(_AUDIT_DDL))
+            conn.execute(text(_ALTER_DETALLE_DDL))
             conn.commit()
         logging.info("✓ Tabla public.auditoria_requests verificada/creada")
     except Exception as e:

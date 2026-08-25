@@ -232,11 +232,27 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             state['adjuntos_descargados'] = True
             state['adjuntos_path'] = resultado['output_path']
             logging.info(f"✓ Adjuntos descargados: {resultado['total_files']} archivos")
+            # Registrar detalle de archivos por carpeta
+            _path = resultado['output_path']
+            _tech = sorted(os.listdir(os.path.join(_path, 'tech'))) if os.path.exists(os.path.join(_path, 'tech')) else []
+            _econ = sorted(os.listdir(os.path.join(_path, 'econ'))) if os.path.exists(os.path.join(_path, 'econ')) else []
+            _otros = sorted(f for f in os.listdir(_path) if os.path.isfile(os.path.join(_path, f))) if os.path.exists(_path) else []
+            diag = state.get('diagnostico') or {}
+            diag['descarga'] = {
+                'tecnicos': _tech, 'num_tecnicos': len(_tech),
+                'economicos': _econ, 'num_economicos': len(_econ),
+                'otros': _otros,
+                'total': len(_tech) + len(_econ) + len(_otros),
+            }
+            state['diagnostico'] = diag
         else:
             state['adjuntos_descargados'] = False
             error_msg = f"Error descargando adjuntos: {resultado.get('error', 'Unknown error')}"
             state = add_error(state, error_msg)
             logging.error(error_msg)
+            diag = state.get('diagnostico') or {}
+            diag['descarga'] = {'error': error_msg, 'total': 0}
+            state['diagnostico'] = diag
 
     except Exception as e:
         state['adjuntos_descargados'] = False
@@ -308,11 +324,25 @@ def procesar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             if resultado['skipped_files'] > 0:
                 warning_msg = f"{resultado['skipped_files']} archivos fueron omitidos durante el procesamiento"
                 state = add_warning(state, warning_msg)
+            # Registrar detalle de archivos procesados
+            _ppath = resultado['output_path']
+            _txts = sorted(f for f in os.listdir(_ppath) if f.endswith('.txt') and f != 'skipped_files.txt') if os.path.exists(_ppath) else []
+            diag = state.get('diagnostico') or {}
+            diag['proceso'] = {
+                'txt_generados': _txts,
+                'num_procesados': resultado.get('processed_files', 0),
+                'num_omitidos': resultado.get('skipped_files', 0),
+                'errores_proceso': resultado.get('errors') or [],
+            }
+            state['diagnostico'] = diag
         else:
             state['adjuntos_procesados'] = False
             error_msg = f"Error procesando adjuntos: {resultado.get('error', 'Unknown error')}"
             state = add_error(state, error_msg)
             logging.error(error_msg)
+            diag = state.get('diagnostico') or {}
+            diag['proceso'] = {'error': error_msg, 'num_procesados': 0, 'num_omitidos': 0}
+            state['diagnostico'] = diag
 
     except Exception as e:
         state['adjuntos_procesados'] = False
@@ -431,6 +461,16 @@ def rag_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
                            f"Crear FAISS ({len(txt_files)} archivos adjuntos)",
                            time.time() - t0)
 
+        # Registrar qué archivos txt se usaron en el FAISS y el modo (adjuntos vs fallback)
+        diag = state.get('diagnostico') or {}
+        _modo = "adjuntos" if txt_files else "descripcion_fallback"
+        diag['rag'] = {
+            'modo': _modo,
+            'archivos_txt_usados': [os.path.basename(f) for f in txt_files],
+            'num_archivos_txt': len(txt_files),
+        }
+        state['diagnostico'] = diag
+
         state['resultado_adjuntos'] = {"ROWNUM": state['payload'].get('ROWNUM')}
         logging.info(f"✓ Nodo RAG adjuntos completado — todos los campos se extraen via campos_manuales")
 
@@ -472,6 +512,9 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
     if not state.get('use_diccionarios', True):
         state['resultado_final'] = state.get('resultado_adjuntos')
         logging.info("⊘ Diccionarios deshabilitados, usando resultado de adjuntos")
+        diag = state.get('diagnostico') or {}
+        diag['normalizacion'] = {'use_diccionarios': False}
+        state['diagnostico'] = diag
         state = add_tiempo(state, _NODO, "total",
                            "Total nodo rag_diccionarios (deshabilitado)",
                            time.time() - t_nodo)
@@ -515,6 +558,34 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
         )
         state['tiempos'] = tiempos_locales
 
+        # Registrar diagnóstico de normalización
+        _sim, _llm, _sin_match = [], [], []
+        for t in tiempos_locales:
+            if t.get('nodo') != _NODO:
+                continue
+            fase = t.get('fase', '')
+            if fase.startswith('sim_'):
+                _sim.append(fase[4:])
+            elif fase.startswith('llm_fallback_'):
+                _llm.append(fase[13:])
+        # Campos que cambiaron de valor respecto al input
+        _cambiados = {
+            k: {"antes": str(resultado_previo.get(k)), "despues": str(v)}
+            for k, v in resultado.items()
+            if k != 'ROWNUM' and str(resultado_previo.get(k)) != str(v)
+        }
+        diag = state.get('diagnostico') or {}
+        diag['normalizacion'] = {
+            'use_diccionarios': True,
+            'campos_similitud': _sim,
+            'campos_llm_fallback': _llm,
+            'num_similitud': len(_sim),
+            'num_llm_fallback': len(_llm),
+            'campos_cambiados': _cambiados,
+            'num_cambiados': len(_cambiados),
+        }
+        state['diagnostico'] = diag
+
         state['resultado_diccionarios'] = resultado
         state['resultado_final'] = resultado
         logging.info(f"✓ RAG diccionarios completado para ROWNUM {state['payload'].get('ROWNUM')}")
@@ -526,6 +597,9 @@ def rag_diccionarios_node(state: CatalogacionState) -> CatalogacionState:
         state['resultado_final'] = state.get('resultado_adjuntos')
         warning_msg = "Usando resultado de adjuntos debido a error en diccionarios"
         state = add_warning(state, warning_msg)
+        diag = state.get('diagnostico') or {}
+        diag['normalizacion'] = {'use_diccionarios': True, 'error': error_msg}
+        state['diagnostico'] = diag
 
     state = add_tiempo(state, _NODO, "total",
                        "Total nodo rag_diccionarios",
@@ -586,6 +660,22 @@ def consolidar_resultado_node(state: CatalogacionState) -> CatalogacionState:
             logging.warning(f"  - {error}")
     if state.get('warnings'):
         logging.info(f"ℹ️  {len(state['warnings'])} warnings generados")
+
+    # Registrar resumen de campos del resultado final
+    _VACIOS = {"no disponible", "no especificado", "false", "", "none"}
+    rf = state.get('resultado_final') or {}
+    campos_con_valor = {k: v for k, v in rf.items()
+                        if k != 'ROWNUM' and v is not None and str(v).strip().lower() not in _VACIOS}
+    campos_vacios = [k for k, v in rf.items()
+                     if k != 'ROWNUM' and (v is None or str(v).strip().lower() in _VACIOS)]
+    diag = state.get('diagnostico') or {}
+    diag['campos'] = {
+        'extraidos': campos_con_valor,
+        'vacios': campos_vacios,
+        'num_extraidos': len(campos_con_valor),
+        'num_vacios': len(campos_vacios),
+    }
+    state['diagnostico'] = diag
 
     # Sub-fase 6b: limpiar archivos temporales
     t0 = time.time()
