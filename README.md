@@ -440,7 +440,7 @@ Ver `.env.example` para la lista completa. Las más relevantes:
 DEFAULT_LLM_PROVIDER=openai          # openai | gemini | deepseek
 
 # Claves API
-OPENAI_API_KEY=sk-...                # Siempre requerida (embeddings)
+OPENAI_API_KEY=sk-...                # Requerida si DEFAULT_LLM_PROVIDER=openai
 GOOGLE_API_KEY=AIza...               # Solo si DEFAULT_LLM_PROVIDER=gemini
 DEEPSEEK_API_KEY=...                 # Solo si DEFAULT_LLM_PROVIDER=deepseek
 
@@ -460,6 +460,44 @@ CATEGORIAS_SOPORTADAS=Computadores,Medicamentos
 # 0 = sin caché, siempre re-descarga (default)
 # >0 = reutiliza archivos si son más frescos que N segundos
 ATTACHMENTS_CACHE_TTL_SECONDS=0
+
+# Embeddings de los diccionarios de normalización — LOCALES, no de OpenAI.
+# Tiene que ser un modelo de HuggingFace: agents/get_vectorstore.py se lo pasa
+# a HuggingFaceEmbeddings. Es el que pre-descarga el Dockerfile.
+EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+```
+
+### ⚠️ `EMBEDDING_MODEL` y el caché de FAISS
+
+Los embeddings de los diccionarios son **locales** desde la migración a
+`sentence-transformers`. `OPENAI_API_KEY` ya no se usa para ellos: solo para el LLM
+cuando `DEFAULT_LLM_PROVIDER=openai`.
+
+Dos consecuencias que ya causaron una caída (2026-08-17, levantando la API en local
+para extraer atributos de SoloTodo):
+
+**1. El valor tiene que ser un modelo de HuggingFace.** `agents/get_vectorstore.py`
+lo pasa directo a `HuggingFaceEmbeddings(model_name=...)`. Si queda un nombre de
+OpenAI —como `text-embedding-3-small`, que es lo que arrastran los `.env` viejos—
+la app revienta al construir el vectorstore, porque busca ese repo en HuggingFace
+y no existe.
+
+**2. Cambiarlo invalida `cache/faiss_dict/`.** Los índices se guardan con la
+dimensión del modelo que los generó: MiniLM produce 384, `text-embedding-3-small`
+producía 1536. Un índice de 1536 cargado con un modelo de 384 **no falla en
+`load_local`** —el `try/except` de `retriever_diccionario.py` no lo atrapa— sino
+después, en el `similarity_search`, que está fuera de ese bloque. Al cambiar de
+modelo hay que borrar el caché para que se reconstruya:
+
+```bash
+rm -rf cache/faiss_dict/    # se regenera solo desde diccionarios/*.csv
+```
+
+Para verificar con qué dimensión quedó un índice:
+
+```bash
+python -c "import faiss; print(faiss.read_index('cache/faiss_dict/Computadores__marca/index.faiss').d)"
+# 384 = MiniLM (correcto) · 1536 = OpenAI (caché viejo, hay que borrarlo)
 ```
 
 ---
