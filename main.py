@@ -489,6 +489,7 @@ async def catalogar_producto(request: CatalogarRequest,
         resultado_completo = resultado_completo or {}
         _detalle_audit = json.dumps({
             "diagnostico": resultado_completo.get("diagnostico") or {},
+            "resultado": resultado_completo.get("resultado_final") or {},
             "tiempos": resultado_completo.get("tiempos") or [],
             "errores": resultado_completo.get("errores") or [],
             "warnings": resultado_completo.get("warnings") or [],
@@ -607,6 +608,7 @@ async def catalogar_licitacion(request: CatalogarLicitacionRequest,
         resultado_completo = resultado_completo or {}
         _detalle_audit = json.dumps({
             "diagnostico": resultado_completo.get("diagnostico") or {},
+            "resultado": resultado_completo.get("resultado_final") or {},
             "tiempos": resultado_completo.get("tiempos") or [],
             "errores": resultado_completo.get("errores") or [],
             "warnings": resultado_completo.get("warnings") or [],
@@ -716,6 +718,7 @@ async def catalogar_texto(request: CatalogarTextoRequest,
         resultado_completo = resultado_completo or {}
         _detalle_audit = json.dumps({
             "diagnostico": resultado_completo.get("diagnostico") or {},
+            "resultado": resultado_completo.get("resultado_final") or {},
             "tiempos": resultado_completo.get("tiempos") or [],
             "errores": resultado_completo.get("errores") or [],
             "warnings": resultado_completo.get("warnings") or [],
