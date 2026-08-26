@@ -30,10 +30,6 @@ from agents.grafo import ejecutar_catalogacion_texto
 from utils.get_attachments import TokenAttachmentDownloader
 from utils.audit import crear_tabla_auditoria, registrar_auditoria, contar_atributos_extraidos
 from agents.get_agent import reset_token_counter, get_token_counter
-from utils.langsmith_utils import set_langsmith
-
-set_langsmith()
-
 # Cargar variables de entorno
 load_dotenv()
 

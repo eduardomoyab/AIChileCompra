@@ -445,7 +445,15 @@ class LicitacionDownloaderAdapter:
             rut_proveedor=rut_proveedor,
             output_folder=output_folder,
         )
-        success = dl.download_all()
+        download_error: Optional[str] = None
+        try:
+            success = dl.download_all()
+            if not success:
+                download_error = "No se encontraron o descargaron anexos técnicos ni económicos en la licitación"
+        except Exception as e:
+            success = False
+            download_error = f"{type(e).__name__}: {str(e)}"
+            logging.exception(f"Excepción en dl.download_all(): {e}")
 
         # Aplanar: mover archivos de tech/ y econ/ al nivel raíz
         files_downloaded = []
@@ -467,12 +475,15 @@ class LicitacionDownloaderAdapter:
                 files_downloaded.append(os.path.basename(dst))
             shutil.rmtree(sub_path, ignore_errors=True)
 
-        return {
+        result: dict = {
             "success": success,
             "files_downloaded": files_downloaded,
             "output_path": output_folder,
             "total_files": len(files_downloaded),
         }
+        if not success:
+            result["error"] = download_error or "Error desconocido en descarga"
+        return result
 
     def close(self):
         pass

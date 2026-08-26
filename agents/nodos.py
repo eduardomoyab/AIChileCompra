@@ -247,11 +247,18 @@ def descargar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             state['diagnostico'] = diag
         else:
             state['adjuntos_descargados'] = False
-            error_msg = f"Error descargando adjuntos: {resultado.get('error', 'Unknown error')}"
+            _raw_error = resultado.get('error') or 'Sin detalle de error'
+            _parciales = resultado.get('files_downloaded') or []
+            error_msg = f"Error descargando adjuntos: {_raw_error}"
             state = add_error(state, error_msg)
             logging.error(error_msg)
             diag = state.get('diagnostico') or {}
-            diag['descarga'] = {'error': error_msg, 'total': 0}
+            diag['descarga'] = {
+                'error': _raw_error,
+                'archivos_parciales': _parciales,
+                'num_parciales': len(_parciales),
+                'total': len(_parciales),
+            }
             state['diagnostico'] = diag
 
     except Exception as e:
@@ -328,11 +335,15 @@ def procesar_adjuntos_node(state: CatalogacionState) -> CatalogacionState:
             _ppath = resultado['output_path']
             _txts = sorted(f for f in os.listdir(_ppath) if f.endswith('.txt') and f != 'skipped_files.txt') if os.path.exists(_ppath) else []
             diag = state.get('diagnostico') or {}
+            _arch = resultado.get('archivos_comprimidos') or {}
             diag['proceso'] = {
                 'txt_generados': _txts,
                 'num_procesados': resultado.get('processed_files', 0),
                 'num_omitidos': resultado.get('skipped_files', 0),
                 'errores_proceso': resultado.get('errors') or [],
+                'comprimidos_encontrados': _arch.get('archivos_comprimidos_encontrados', 0),
+                'comprimidos_extraidos': _arch.get('extraidos', 0),
+                'comprimidos_fallidos': _arch.get('fallidos') or [],
             }
             state['diagnostico'] = diag
         else:
@@ -1048,9 +1059,14 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
             # Se usa para construir un mini-FAISS con solo los chunks del producto correcto
             chunks_ancla = ""
             search_store = vectorstore  # fallback: FAISS global
+            mejor_score_ancla = float('inf')
             try:
                 k_ancla = int(os.getenv('CAMPOS_MANUALES_ANCLA_K', '8'))
-                docs_ancla = vectorstore.similarity_search(producto_contexto, k=k_ancla)
+                ancla_with_scores = vectorstore.similarity_search_with_score(producto_contexto, k=k_ancla)
+                docs_ancla = [doc for doc, _ in ancla_with_scores]
+                ancla_scores = [score for _, score in ancla_with_scores]
+                if ancla_scores:
+                    mejor_score_ancla = min(ancla_scores)
                 if docs_ancla:
                     chunks_ancla = "\n\n".join([
                         f"  Fragmento {i+1}:\n  {doc.page_content}"
@@ -1061,9 +1077,28 @@ def campos_manuales_node(state: CatalogacionState) -> CatalogacionState:
                     ancla_texts = [d.page_content for d in docs_ancla]
                     ancla_metas = [d.metadata for d in docs_ancla]
                     search_store = create_faiss_from_texts(ancla_texts, ancla_metas)
-                    logging.info(f"  Anclaje: mini-FAISS creado con {len(docs_ancla)} chunks del producto")
+                    logging.info(f"  Anclaje: mini-FAISS creado con {len(docs_ancla)} chunks (mejor L2={mejor_score_ancla:.3f})")
             except Exception as e:
                 logging.warning(f"  Error en búsqueda de anclaje, usando FAISS global: {e}")
+
+            # Señal de baja relevancia: adjuntos no contienen specs del producto
+            _diag_now = state.get('diagnostico') or {}
+            _rag_modo = (_diag_now.get('rag') or {}).get('modo', '')
+            _L2_THRESHOLD = float(os.getenv('ADJUNTOS_RELEVANCE_L2_THRESHOLD', '1.2'))
+            _baja_relevancia = (_rag_modo == 'adjuntos') and (mejor_score_ancla > _L2_THRESHOLD)
+            if _baja_relevancia:
+                _warn = (
+                    f"Los adjuntos no contienen especificaciones técnicas del producto "
+                    f"(mejor similitud L2={mejor_score_ancla:.2f} > umbral {_L2_THRESHOLD}). "
+                    f"Puede ser un contrato genérico o de suministro sin detalle técnico."
+                )
+                state = add_warning(state, _warn)
+                logging.warning(f"⚠️  {_warn}")
+            _rag_diag = (_diag_now.get('rag') or {})
+            _rag_diag['mejor_score_ancla_l2'] = round(mejor_score_ancla, 3) if mejor_score_ancla != float('inf') else None
+            _rag_diag['baja_relevancia'] = _baja_relevancia
+            _diag_now['rag'] = _rag_diag
+            state['diagnostico'] = _diag_now
 
             campos_con_docs = []
             for item in campos_manuales:

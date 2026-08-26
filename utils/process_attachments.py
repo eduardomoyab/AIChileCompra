@@ -2,7 +2,9 @@ import os
 import io
 import csv
 import logging
+import shutil
 import unicodedata
+import zipfile
 import gc
 import numpy as np
 from tqdm import tqdm
@@ -13,6 +15,34 @@ from typing import Optional, List
 import fitz  # PyMuPDF
 import easyocr
 from PIL import Image
+
+try:
+    import rarfile
+    _rarfile_available = True
+except ImportError:
+    _rarfile_available = False
+    logging.warning("rarfile no disponible — archivos .rar no serán extraídos")
+
+
+def _find_unrar_tool() -> Optional[str]:
+    """Busca el ejecutable unrar/UnRAR en orden de prioridad."""
+    # 1. Variable de entorno explícita
+    env_path = os.environ.get("UNRAR_PATH", "")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    # 2. Ubicaciones típicas de WinRAR en Windows
+    for candidate in [
+        r"C:\Program Files\WinRAR\UnRAR.exe",
+        r"C:\Program Files (x86)\WinRAR\UnRAR.exe",
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
+    # 3. PATH del sistema (Linux: apt-get install unrar)
+    for name in ("unrar", "unrar-free"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
 
 try:
     import xlrd
@@ -87,6 +117,85 @@ class AttachmentProcessor:
 
         # Cargar archivos previamente omitidos
         self._load_skipped_files()
+
+    def _extract_archives_in_path(self) -> dict:
+        """
+        Extrae archivos .rar y .zip encontrados en attachments_path al mismo directorio
+        (extracción plana, sin estructura de subdirectorios) para que el loop principal
+        los procese como si fueran archivos normales.
+
+        Returns:
+            dict con: archivos_comprimidos_encontrados, extraidos, fallidos (lista de nombres)
+        """
+        unrar_tool = _find_unrar_tool()
+        if _rarfile_available and unrar_tool:
+            rarfile.UNRAR_TOOL = unrar_tool
+
+        found, extracted, failed = [], 0, []
+
+        try:
+            entries = os.listdir(self.attachments_path)
+        except Exception:
+            return {"archivos_comprimidos_encontrados": 0, "extraidos": 0, "fallidos": []}
+
+        for fname in entries:
+            fpath = os.path.join(self.attachments_path, fname)
+            lower = fname.lower()
+
+            if lower.endswith(".rar"):
+                found.append(fname)
+                if not _rarfile_available or not unrar_tool:
+                    logging.warning(f"RAR encontrado pero unrar no disponible: {fname}")
+                    failed.append(fname)
+                    continue
+                try:
+                    rf = rarfile.RarFile(fpath)
+                    for member in rf.infolist():
+                        if member.is_dir():
+                            continue
+                        member_name = os.path.basename(member.filename)
+                        if not member_name:
+                            continue
+                        dest = os.path.join(self.attachments_path, member_name)
+                        if not os.path.exists(dest):
+                            data = rf.read(member)
+                            with open(dest, "wb") as out:
+                                out.write(data)
+                    extracted += 1
+                    logging.info(f"✓ RAR extraído: {fname}")
+                except Exception as e:
+                    logging.warning(f"Error extrayendo RAR {fname}: {e}")
+                    failed.append(fname)
+
+            elif lower.endswith(".zip"):
+                found.append(fname)
+                try:
+                    with zipfile.ZipFile(fpath, "r") as zf:
+                        for member in zf.infolist():
+                            if member.filename.endswith("/"):
+                                continue
+                            member_name = os.path.basename(member.filename)
+                            if not member_name:
+                                continue
+                            dest = os.path.join(self.attachments_path, member_name)
+                            if not os.path.exists(dest):
+                                data = zf.read(member)
+                                with open(dest, "wb") as out:
+                                    out.write(data)
+                    extracted += 1
+                    logging.info(f"✓ ZIP extraído: {fname}")
+                except Exception as e:
+                    logging.warning(f"Error extrayendo ZIP {fname}: {e}")
+                    failed.append(fname)
+
+        if found:
+            logging.info(f"Archivos comprimidos: {len(found)} encontrados, {extracted} extraídos, {len(failed)} fallidos")
+
+        return {
+            "archivos_comprimidos_encontrados": len(found),
+            "extraidos": extracted,
+            "fallidos": failed,
+        }
 
     def _load_skipped_files(self):
         """Carga la lista de archivos previamente omitidos"""
@@ -330,6 +439,9 @@ class AttachmentProcessor:
         skipped_count = 0
         errors = []
 
+        # Extraer archivos comprimidos antes de procesar
+        archive_stats = self._extract_archives_in_path()
+
         try:
             files_to_process = []
 
@@ -395,7 +507,8 @@ class AttachmentProcessor:
                 "processed_files": processed_count,
                 "skipped_files": skipped_count,
                 "output_path": self.output_path,
-                "errors": errors if errors else None
+                "errors": errors if errors else None,
+                "archivos_comprimidos": archive_stats,
             }
 
         except Exception as e:

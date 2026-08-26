@@ -1,6 +1,6 @@
 import os
-import yaml
+
 
 def set_langsmith():
-    os.environ['LANGCHAIN_TRACING_V2'] = 'true'
-    os.environ['LANGCHAIN_ENDPOINT'] = 'https://api.smith.langchain.com'
+    # LangSmith tracing deshabilitado — causaba rate limit 429 y ruido en logs
+    os.environ['LANGCHAIN_TRACING_V2'] = 'false'
