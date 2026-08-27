@@ -102,7 +102,7 @@ class LicitacionAttachmentDownloader:
             if response.status_code != 200:
                 self._last_error = f"paso1_pagina_principal: HTTP {response.status_code}"
                 logging.error(f"Error en página principal: {response.status_code}")
-                return None, None
+                return None, None, None
 
             # Paso 2: ENC de OpeningFrame
             match = re.search(r'OpeningFrame\.aspx\?enc=([^"&]+)', response.text)
@@ -110,7 +110,7 @@ class LicitacionAttachmentDownloader:
                 snippet = response.text[:300].replace('\n', ' ')
                 self._last_error = f"paso2_enc_opening_frame: no encontrado. HTML inicio: {snippet}"
                 logging.error(f"No se encontró enc de OpeningFrame. HTML inicio: {snippet}")
-                return None, None
+                return None, None, None
             enc_frame = unquote(match.group(1))
 
             # Paso 3: HTML de OpeningFrame
@@ -124,7 +124,7 @@ class LicitacionAttachmentDownloader:
                 snippet = html_frame[:300].replace('\n', ' ')
                 self._last_error = f"paso4_enc_opening_header: no encontrado. HTML: {snippet}"
                 logging.error(f"No se encontró enc de OpeningHeader. HTML: {snippet}")
-                return None, None
+                return None, None, None
             enc_header = unquote(match_header.group(1))
 
             # Paso 5: HTML de OpeningHeader
@@ -139,7 +139,7 @@ class LicitacionAttachmentDownloader:
                 snippet = html_header[:300].replace('\n', ' ')
                 self._last_error = f"paso6_enc_supply_summary: no encontrado. HTML: {snippet}"
                 logging.error(f"No se encontró enc de SupplySummary. HTML: {snippet}")
-                return None, None
+                return None, None, None
             enc_summary = unquote(match_summary.group(1))
 
             # Paso 7: GET para obtener VIEWSTATE
@@ -152,7 +152,7 @@ class LicitacionAttachmentDownloader:
                 snippet = html_get[:300].replace('\n', ' ')
                 self._last_error = f"paso7_viewstate: no encontrado en SupplySummary. HTML: {snippet}"
                 logging.error(f"VIEWSTATE vacío en SupplySummary. HTML: {snippet}")
-                return None, None
+                return None, None, None
 
             # Paso 8: POST con RUT
             data = {
@@ -172,7 +172,7 @@ class LicitacionAttachmentDownloader:
             if response_post.status_code != 200:
                 self._last_error = f"paso8_post_rut: HTTP {response_post.status_code}"
                 logging.error(f"Error en POST con RUT: {response_post.status_code}")
-                return None, None
+                return None, None, None
 
             html_result = response_post.text
 
@@ -232,7 +232,7 @@ class LicitacionAttachmentDownloader:
         except Exception as e:
             self._last_error = f"excepcion: {type(e).__name__}: {e}"
             logging.exception(f"Error obteniendo anexos: {e}")
-            return None, None
+            return None, None, None
 
     def descargar_anexo(self, viewstate, viewstategen, ctl_id, nombre_archivo, folder, full_url):
         """Descarga un anexo individual."""
