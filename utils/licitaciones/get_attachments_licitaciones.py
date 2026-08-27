@@ -39,12 +39,15 @@ class LicitacionAttachmentDownloader:
         self.codigo_licitacion = codigo_licitacion
         self.rut_proveedor = rut_proveedor
         self.output_folder = output_folder
+        self._last_error: str = ""  # paso exacto donde falló la descarga
 
         # Crear carpetas de salida
         self.tech_folder = os.path.join(output_folder, "tech")
         self.econ_folder = os.path.join(output_folder, "econ")
+        self.admin_folder = os.path.join(output_folder, "admin")
         os.makedirs(self.tech_folder, exist_ok=True)
         os.makedirs(self.econ_folder, exist_ok=True)
+        os.makedirs(self.admin_folder, exist_ok=True)
 
         self.session = requests.Session()
         self.headers = {
@@ -90,52 +93,66 @@ class LicitacionAttachmentDownloader:
         Returns:
             tuple: (enc_tecnicos_list, enc_economicos_list) o (None, None) si falla
         """
+        _TIMEOUT = 30
+
         try:
             # Paso 1: Página principal
             url_main = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={self.codigo_licitacion}"
-            response = self.session.get(url_main, headers=self.headers)
+            response = self.session.get(url_main, headers=self.headers, timeout=_TIMEOUT)
             if response.status_code != 200:
+                self._last_error = f"paso1_pagina_principal: HTTP {response.status_code}"
                 logging.error(f"Error en página principal: {response.status_code}")
                 return None, None
 
             # Paso 2: ENC de OpeningFrame
             match = re.search(r'OpeningFrame\.aspx\?enc=([^"&]+)', response.text)
             if not match:
-                logging.error("No se encontró enc de OpeningFrame")
+                snippet = response.text[:300].replace('\n', ' ')
+                self._last_error = f"paso2_enc_opening_frame: no encontrado. HTML inicio: {snippet}"
+                logging.error(f"No se encontró enc de OpeningFrame. HTML inicio: {snippet}")
                 return None, None
             enc_frame = unquote(match.group(1))
 
             # Paso 3: HTML de OpeningFrame
             url_frame = "https://www.mercadopublico.cl/Procurement/Modules/RFB/StepsProcessAward/OpeningFrame.aspx"
-            response_frame = self.session.get(url_frame, params={"enc": enc_frame}, headers=self.headers)
+            response_frame = self.session.get(url_frame, params={"enc": enc_frame}, headers=self.headers, timeout=_TIMEOUT)
             html_frame = response_frame.text
 
             # Paso 4: ENC de OpeningHeader
             match_header = re.search(r'OpeningHeader\.aspx\?enc=([^"\s]+)', html_frame)
             if not match_header:
-                logging.error("No se encontró enc de OpeningHeader")
+                snippet = html_frame[:300].replace('\n', ' ')
+                self._last_error = f"paso4_enc_opening_header: no encontrado. HTML: {snippet}"
+                logging.error(f"No se encontró enc de OpeningHeader. HTML: {snippet}")
                 return None, None
             enc_header = unquote(match_header.group(1))
 
             # Paso 5: HTML de OpeningHeader
             url_header = "https://www.mercadopublico.cl/Procurement/Modules/RFB/StepsProcessAward/OpeningHeader.aspx"
             self.headers["Referer"] = url_frame
-            response_header = self.session.get(url_header, params={"enc": enc_header}, headers=self.headers)
+            response_header = self.session.get(url_header, params={"enc": enc_header}, headers=self.headers, timeout=_TIMEOUT)
             html_header = response_header.text
 
             # Paso 6: ENC de SupplySummary
             match_summary = re.search(r'SupplySummary\.aspx\?enc=([^"\';]+)', html_header)
             if not match_summary:
-                logging.error("No se encontró enc de SupplySummary")
+                snippet = html_header[:300].replace('\n', ' ')
+                self._last_error = f"paso6_enc_supply_summary: no encontrado. HTML: {snippet}"
+                logging.error(f"No se encontró enc de SupplySummary. HTML: {snippet}")
                 return None, None
             enc_summary = unquote(match_summary.group(1))
 
             # Paso 7: GET para obtener VIEWSTATE
             url_summary = "https://www.mercadopublico.cl/Procurement/Modules/RFB/StepsProcessAward/SupplySummary.aspx"
             params_summary = {"enc": enc_summary}
-            response_get = self.session.get(url_summary, params=params_summary, headers=self.headers)
+            response_get = self.session.get(url_summary, params=params_summary, headers=self.headers, timeout=_TIMEOUT)
             html_get = response_get.text
             campos = self.extraer_campos_hidden(html_get)
+            if not campos.get("__VIEWSTATE"):
+                snippet = html_get[:300].replace('\n', ' ')
+                self._last_error = f"paso7_viewstate: no encontrado en SupplySummary. HTML: {snippet}"
+                logging.error(f"VIEWSTATE vacío en SupplySummary. HTML: {snippet}")
+                return None, None
 
             # Paso 8: POST con RUT
             data = {
@@ -151,8 +168,9 @@ class LicitacionAttachmentDownloader:
                 "WucPagerGridShidSort": ""
             }
 
-            response_post = self.session.post(url_summary, params=params_summary, data=data, headers=self.headers)
+            response_post = self.session.post(url_summary, params=params_summary, data=data, headers=self.headers, timeout=_TIMEOUT)
             if response_post.status_code != 200:
+                self._last_error = f"paso8_post_rut: HTTP {response_post.status_code}"
                 logging.error(f"Error en POST con RUT: {response_post.status_code}")
                 return None, None
 
@@ -164,29 +182,55 @@ class LicitacionAttachmentDownloader:
             bloques = re.findall(r'<tr[^>]*class="[^"]*?"[^>]*>.*?</tr>', html_unescaped, re.DOTALL | re.IGNORECASE)
             enc_tecnicos = []
             enc_economicos = []
+            enc_administrativos = []
+            rut_encontrado = False
 
             for bloque in bloques:
                 if self.rut_proveedor in bloque:
-                    # Buscar Anexos Técnicos
+                    rut_encontrado = True
                     tecnicos = re.findall(
                         r'title="Anexos Técnicos".*?openPopUp\(\'.*?enc=([^\'"]+)',
                         bloque, re.DOTALL
                     )
                     enc_tecnicos.extend(tecnicos)
 
-                    # Buscar Anexos Económicos
                     economicos = re.findall(
                         r'title="Anexos econ[oó]micos".*?openPopUp\(\'.*?enc=([^\'"]+)',
                         bloque, re.DOTALL
                     )
                     enc_economicos.extend(economicos)
+
+                    administrativos = re.findall(
+                        r'title="Anexos Administrativos".*?openPopUp\(\'.*?enc=([^\'"]+)',
+                        bloque, re.DOTALL
+                    )
+                    enc_administrativos.extend(administrativos)
                     break
 
-            logging.info(f"Encontrados {len(enc_tecnicos)} anexos técnicos y {len(enc_economicos)} anexos económicos")
+            if not rut_encontrado:
+                n_bloques = len(bloques)
+                muestra = [b[:80].replace('\n', ' ') for b in bloques[:3]]
+                self._last_error = (
+                    f"paso9_rut_no_encontrado: RUT '{self.rut_proveedor}' no está en ninguno de "
+                    f"{n_bloques} bloques <tr>. Muestra: {muestra}"
+                )
+                logging.warning(self._last_error)
+            elif not enc_tecnicos and not enc_economicos and not enc_administrativos:
+                self._last_error = (
+                    f"paso9_sin_enc: RUT encontrado en tabla pero sin links de anexos técnicos, económicos ni administrativos"
+                )
+                logging.warning(self._last_error)
 
-            return enc_tecnicos or None, enc_economicos or None
+            logging.info(
+                f"Encontrados {len(enc_tecnicos)} técnicos, "
+                f"{len(enc_economicos)} económicos, "
+                f"{len(enc_administrativos)} administrativos"
+            )
+
+            return enc_tecnicos or None, enc_economicos or None, enc_administrativos or None
 
         except Exception as e:
+            self._last_error = f"excepcion: {type(e).__name__}: {e}"
             logging.exception(f"Error obteniendo anexos: {e}")
             return None, None
 
@@ -200,7 +244,7 @@ class LicitacionAttachmentDownloader:
                 f"DWNL$grdId${ctl_id}$search.y": "14",
                 "DWNL$ctl10": ""
             }
-            r = self.session.post(full_url, headers=self.headers, data=data)
+            r = self.session.post(full_url, headers=self.headers, data=data, timeout=30)
             content = r.content
             ext = self.detectar_extension(content)
 
@@ -251,7 +295,7 @@ class LicitacionAttachmentDownloader:
             self.headers["Referer"] = full_url
 
             # GET inicial usando la sesión establecida (mantiene cookies de navegación)
-            r = self.session.get(full_url, headers=self.headers)
+            r = self.session.get(full_url, headers=self.headers, timeout=30)
             soup = BeautifulSoup(r.text, "html.parser")
             viewstate = soup.find("input", {"id": "__VIEWSTATE"})["value"]
             viewstategen = soup.find("input", {"id": "__VIEWSTATEGENERATOR"})["value"]
@@ -288,7 +332,11 @@ class LicitacionAttachmentDownloader:
         """
         try:
             # Obtener ENC de anexos
-            encs_tech, encs_econ = self.obtener_anexos_rut()
+            encs_tech, encs_econ, encs_admin = self.obtener_anexos_rut()
+
+            if not encs_tech and not encs_econ and not encs_admin:
+                # _last_error ya fue seteado en obtener_anexos_rut
+                return False
 
             total_descargados = 0
 
@@ -306,10 +354,21 @@ class LicitacionAttachmentDownloader:
                     count = self.download_attachments_from_enc(enc, self.econ_folder)
                     total_descargados += count
 
+            # Descargar administrativos
+            if encs_admin:
+                logging.info(f"Descargando {len(encs_admin)} grupos de anexos administrativos...")
+                for enc in encs_admin:
+                    count = self.download_attachments_from_enc(enc, self.admin_folder)
+                    total_descargados += count
+
+            if total_descargados == 0 and not self._last_error:
+                self._last_error = "enc encontrados pero 0 archivos descargados exitosamente"
+
             logging.info(f"Total descargados: {total_descargados} archivos")
 
             return total_descargados > 0
 
         except Exception as e:
+            self._last_error = f"excepcion_download_all: {type(e).__name__}: {e}"
             logging.exception(f"Error en download_all: {e}")
             return False

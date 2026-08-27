@@ -449,7 +449,11 @@ class LicitacionDownloaderAdapter:
         try:
             success = dl.download_all()
             if not success:
-                download_error = "No se encontraron o descargaron anexos técnicos ni económicos en la licitación"
+                step_detail = getattr(dl, '_last_error', '') or ''
+                if step_detail:
+                    download_error = f"No se encontraron o descargaron anexos técnicos ni económicos en la licitación — {step_detail}"
+                else:
+                    download_error = "No se encontraron o descargaron anexos técnicos ni económicos en la licitación"
         except Exception as e:
             success = False
             download_error = f"{type(e).__name__}: {str(e)}"
@@ -457,7 +461,7 @@ class LicitacionDownloaderAdapter:
 
         # Aplanar: mover archivos de tech/ y econ/ al nivel raíz
         files_downloaded = []
-        for subfolder in ["tech", "econ"]:
+        for subfolder in ["tech", "econ", "admin"]:
             sub_path = os.path.join(output_folder, subfolder)
             if not os.path.exists(sub_path):
                 continue
