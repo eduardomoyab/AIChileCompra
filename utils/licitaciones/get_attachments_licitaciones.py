@@ -10,6 +10,7 @@ import requests
 import os
 import logging
 import re
+import time
 from urllib.parse import unquote
 from html import unescape
 
@@ -86,15 +87,14 @@ class LicitacionAttachmentDownloader:
         else:
             return 'bin'
 
-    def obtener_anexos_rut(self):
+    def _obtener_anexos_intento(self, _TIMEOUT=30):
         """
-        Obtiene los ENC (tokens) de anexos técnicos y económicos para el RUT.
+        Un intento de navegación para obtener los ENC de anexos.
 
         Returns:
-            tuple: (enc_tecnicos_list, enc_economicos_list) o (None, None) si falla
+            - tuple (enc_tech, enc_econ, enc_admin): resultado definitivo (éxito o paso9)
+            - False: fallo transiente en pasos 1-8, vale la pena reintentar
         """
-        _TIMEOUT = 30
-
         try:
             # Paso 1: Página principal
             url_main = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={self.codigo_licitacion}"
@@ -102,7 +102,7 @@ class LicitacionAttachmentDownloader:
             if response.status_code != 200:
                 self._last_error = f"paso1_pagina_principal: HTTP {response.status_code}"
                 logging.error(f"Error en página principal: {response.status_code}")
-                return None, None, None
+                return False
 
             # Paso 2: ENC de OpeningFrame
             match = re.search(r'OpeningFrame\.aspx\?enc=([^"&]+)', response.text)
@@ -110,7 +110,7 @@ class LicitacionAttachmentDownloader:
                 snippet = response.text[:300].replace('\n', ' ')
                 self._last_error = f"paso2_enc_opening_frame: no encontrado. HTML inicio: {snippet}"
                 logging.error(f"No se encontró enc de OpeningFrame. HTML inicio: {snippet}")
-                return None, None, None
+                return False
             enc_frame = unquote(match.group(1))
 
             # Paso 3: HTML de OpeningFrame
@@ -124,7 +124,7 @@ class LicitacionAttachmentDownloader:
                 snippet = html_frame[:300].replace('\n', ' ')
                 self._last_error = f"paso4_enc_opening_header: no encontrado. HTML: {snippet}"
                 logging.error(f"No se encontró enc de OpeningHeader. HTML: {snippet}")
-                return None, None, None
+                return False
             enc_header = unquote(match_header.group(1))
 
             # Paso 5: HTML de OpeningHeader
@@ -139,7 +139,7 @@ class LicitacionAttachmentDownloader:
                 snippet = html_header[:300].replace('\n', ' ')
                 self._last_error = f"paso6_enc_supply_summary: no encontrado. HTML: {snippet}"
                 logging.error(f"No se encontró enc de SupplySummary. HTML: {snippet}")
-                return None, None, None
+                return False
             enc_summary = unquote(match_summary.group(1))
 
             # Paso 7: GET para obtener VIEWSTATE
@@ -152,7 +152,7 @@ class LicitacionAttachmentDownloader:
                 snippet = html_get[:300].replace('\n', ' ')
                 self._last_error = f"paso7_viewstate: no encontrado en SupplySummary. HTML: {snippet}"
                 logging.error(f"VIEWSTATE vacío en SupplySummary. HTML: {snippet}")
-                return None, None, None
+                return False
 
             # Paso 8: POST con RUT
             data = {
@@ -172,7 +172,7 @@ class LicitacionAttachmentDownloader:
             if response_post.status_code != 200:
                 self._last_error = f"paso8_post_rut: HTTP {response_post.status_code}"
                 logging.error(f"Error en POST con RUT: {response_post.status_code}")
-                return None, None, None
+                return False
 
             html_result = response_post.text
 
@@ -232,7 +232,27 @@ class LicitacionAttachmentDownloader:
         except Exception as e:
             self._last_error = f"excepcion: {type(e).__name__}: {e}"
             logging.exception(f"Error obteniendo anexos: {e}")
-            return None, None, None
+            return False
+
+    def obtener_anexos_rut(self, max_intentos: int = 3, retry_delay: int = 15):
+        """
+        Obtiene los ENC de anexos con reintentos automáticos ante fallos transientes del portal.
+
+        Returns:
+            tuple: (enc_tecnicos, enc_economicos, enc_administrativos) o (None, None, None)
+        """
+        for intento in range(1, max_intentos + 1):
+            resultado = self._obtener_anexos_intento()
+            if resultado is not False:
+                return resultado
+            if intento < max_intentos:
+                logging.warning(
+                    f"Intento {intento}/{max_intentos} fallido ({self._last_error[:80]}). "
+                    f"Reintentando en {retry_delay}s..."
+                )
+                time.sleep(retry_delay)
+        logging.error(f"Todos los intentos agotados. Último error: {self._last_error}")
+        return None, None, None
 
     def descargar_anexo(self, viewstate, viewstategen, ctl_id, nombre_archivo, folder, full_url):
         """Descarga un anexo individual."""
